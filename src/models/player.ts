@@ -4,5 +4,5 @@ export interface Player {
   id: string;
   name: string;
   hand: Card[];
-  title: "King" | "Wise" | "Beggar" | "Civilian" | "Citizen" | null;
+  title: 'King' | 'Wise' | 'Beggar' | 'Civilian' | 'Citizen' | null;
 }

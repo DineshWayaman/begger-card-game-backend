@@ -1,136 +1,187 @@
-import { Card } from "../models/card";
-import { Game } from "../models/game";
-import { Player } from "../models/player";
-
+import { Card } from '../models/card';
+import { Game } from '../models/game';
+import { Player } from '../models/player';
 
 export class GameService {
   private games: { [key: string]: Game } = {};
-  private jokerCounter = 0;
+  private readonly MIN_PLAYERS = 2;
+  private readonly MAX_PLAYERS = 6;
 
-  createGame(id: string, isTestMode: boolean = false): Game {
-    console.log(`Creating game ${id}, testMode: ${isTestMode}`);
+  createDeck(): Card[] {
+    console.log('Creating deck');
+    const suits = ['hearts', 'diamonds', 'clubs', 'spades'];
+    const ranks = ['3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K', 'A', '2'];
+    return [
+      ...suits.flatMap(suit => ranks.map(rank => ({
+        suit,
+        rank,
+        isJoker: false,
+        isDetails: false,
+        assignedRank: null,
+        assignedSuit: null,
+      }))),
+      {
+        suit: 'joker1',
+        rank: null,
+        isJoker: true,
+        isDetails: false,
+        assignedRank: null,
+        assignedSuit: null,
+      },
+      {
+        suit: 'joker2',
+        rank: null,
+        isJoker: true,
+        isDetails: false,
+        assignedRank: null,
+        assignedSuit: null,
+      },
+      {
+        suit: null,
+        rank: null,
+        isJoker: false,
+        isDetails: true,
+        assignedRank: null,
+        assignedSuit: null,
+      },
+    ];
+  }
+
+  createGame(gameId: string, playerName: string, isTestMode: boolean): Game {
+    console.log(`Creating game ${gameId}`);
+    const deck = this.createDeck();
+    const playerId = `${gameId}-${playerName}`;
+    const players: Player[] = [{
+      id: playerId,
+      name: playerName,
+      hand: [],
+      title: null,
+    }];
     const game: Game = {
-      id,
-      players: [],
+      id: gameId,
+      players,
+      deck,
       pile: [],
       currentTurn: 0,
-      status: 'waiting',
-      isTestMode,
+      status: isTestMode ? 'playing' : 'waiting',
       passCount: 0,
+      currentPattern: null,
       lastPlayedPlayerId: null,
-      currentPattern: null, // CHANGE: Initialize pattern
-     
+      isTestMode,
     };
-    this.games[id] = game;
+    this.games[gameId] = game;
+    if (isTestMode) {
+      this.startGame(gameId);
+    }
     return game;
   }
 
-  getGame(id: string): Game | null {
-    return this.games[id] || null;
+  getGame(gameId: string): Game | null {
+    return this.games[gameId] || null;
   }
 
-  joinGame(gameId: string, playerId: string, playerName: string, isTestMode: boolean = false): Game | null {
-    console.log(`Joining game ${gameId}, player ${playerId}, name ${playerName}, testMode: ${isTestMode}`);
-    let game = this.getGame(gameId);
-    if (!game) {
-      game = this.createGame(gameId, isTestMode);
-    }
-    if (!game.isTestMode && game.players.length >= 5) {
-      console.log('Game full');
+  joinGame(gameId: string, playerName: string): Game | null {
+    const game = this.getGame(gameId);
+    if (!game || game.status !== 'waiting') {
+      console.log(`Cannot join game ${gameId}: Game not found or not in waiting state`);
       return null;
     }
-    if (game.players.some(p => p.id === playerId)) {
-      console.log('Player already in game');
-      return game;
+    if (game.players.length >= this.MAX_PLAYERS) {
+      console.log(`Cannot join game ${gameId}: Maximum players (${this.MAX_PLAYERS}) reached`);
+      return null;
     }
-
+    if (game.players.some(p => p.name === playerName)) {
+      console.log(`Player ${playerName} already in game ${gameId}`);
+      return null;
+    }
+    const playerId = `${gameId}-${playerName}`;
     game.players.push({
       id: playerId,
       name: playerName,
       hand: [],
       title: null,
     });
-    console.log(`Player ${playerName} added, total players: ${game.players.length}`);
-
-    if (game.isTestMode || game.players.length >= 2) { // Temporary for 2-player testing
-      this.startGame(game);
-    }
-
+    console.log(`Player ${playerName} joined game ${gameId}. Players: ${game.players.length}/${this.MAX_PLAYERS}`);
     return game;
   }
 
-  startGame(game: Game) {
-    console.log(`Starting game ${game.id}, testMode: ${game.isTestMode}`);
+  startGame(gameId: string): Game | null {
+    const game = this.getGame(gameId);
+    if (!game || (game.status !== 'waiting' && !game.isTestMode)) {
+      console.log(`Cannot start game ${gameId}: Game not found or not in waiting state`);
+      return null;
+    }
+    if (!game.isTestMode && (game.players.length < this.MIN_PLAYERS || game.players.length > this.MAX_PLAYERS)) {
+      console.log(`Cannot start game ${gameId}: Player count (${game.players.length}) not between ${this.MIN_PLAYERS} and ${this.MAX_PLAYERS}`);
+      return null;
+    }
     game.status = 'playing';
-    const deck = this.createDeck();
-    this.shuffle(deck);
-    this.deal(game, deck);
-    game.currentTurn = 0;
-    game.passCount = 0;
-    game.lastPlayedPlayerId = null;
-    game.currentPattern = null; // CHANGE: Reset pattern
-    console.log(`Game started, players: ${game.players.length}, deck size: ${deck.length}`);
+    this.shuffle(game.deck);
+    this.deal(game);
+    console.log(`Game ${gameId} started with ${game.players.length} players`);
+    return game;
   }
 
-  createDeck(): Card[] {
-    console.log('Creating deck');
-    const suits = ['hearts', 'diamonds', 'clubs', 'spades'];
-    const ranks = ['3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K', 'A', '2'];
-    this.jokerCounter = 0;
-    return [
-        ...suits.flatMap(suit => ranks.map(rank => ({ 
-          suit, 
-          rank, 
-          isJoker: false, 
-          isDetails: false,
-          assignedRank: null, // Joker Update: Initialize
-          assignedSuit: null, // Joker Update: Initialize
-        }))),
-        { 
-          suit: 'joker1', 
-          rank: null, 
-          isJoker: true, 
-          isDetails: false, 
-          assignedRank: null, // Joker Update: Initialize
-          assignedSuit: null, // Joker Update: Initialize
-        },
-        { 
-          suit: 'joker2', 
-          rank: null, 
-          isJoker: true, 
-          isDetails: false, 
-          assignedRank: null, // Joker Update: Initialize
-          assignedSuit: null, // Joker Update: Initialize
-        },
-        { 
-          suit: null, 
-          rank: null, 
-          isJoker: false, 
-          isDetails: true, 
-          assignedRank: null, // Joker Update: Initialize
-          assignedSuit: null, // Joker Update: Initialize
-        },
-      ];
+  startGameManually(gameId: string, playerId: string): Game | null {
+    const game = this.getGame(gameId);
+    if (!game || game.status !== 'waiting') {
+      console.log(`Cannot start game ${gameId}: Game not found or not in waiting state`);
+      return null;
+    }
+    if (game.players.length < this.MIN_PLAYERS || game.players.length > this.MAX_PLAYERS) {
+      console.log(`Cannot start game ${gameId}: Player count (${game.players.length}) not between ${this.MIN_PLAYERS} and ${this.MAX_PLAYERS}`);
+      return null;
+    }
+    if (!game.players.some(p => p.id === playerId)) {
+      console.log(`Player ${playerId} not in game ${gameId}`);
+      return null;
+    }
+    console.log(`Player ${playerId} initiated manual start for game ${gameId}`);
+    return this.startGame(gameId);
   }
 
-  shuffle(deck: Card[]) {
-    console.log('Shuffling deck');
+  shuffle(deck: Card[]): void {
     for (let i = deck.length - 1; i > 0; i--) {
       const j = Math.floor(Math.random() * (i + 1));
       [deck[i], deck[j]] = [deck[j], deck[i]];
     }
   }
 
-  deal(game: Game, deck: Card[]) {
-    console.log(`Dealing cards to ${game.players.length} players`);
-    const cardsPerPlayer = Math.floor(deck.length / Math.max(1, game.players.length));
-    game.players.forEach((player, i) => {
-      player.hand = deck.slice(i * cardsPerPlayer, (i + 1) * cardsPerPlayer);
-      console.log(`Dealt ${player.hand.length} cards to ${player.name}`);
-    });
+  deal(game: Game): void {
+    const baseCardsPerPlayer = Math.floor(game.deck.length / game.players.length);
+    const totalCards = game.deck.length;
+    const extraCards = totalCards % game.players.length;
+
+    // Shuffle players to randomize who gets extra card
+    const shuffledPlayerIndices = Array.from({ length: game.players.length }, (_, i) => i);
+    for (let i = shuffledPlayerIndices.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [shuffledPlayerIndices[i], shuffledPlayerIndices[j]] = [shuffledPlayerIndices[j], shuffledPlayerIndices[i]];
+    }
+
+    let deckIndex = 0;
+    const cardsDealt: number[] = new Array(game.players.length).fill(0);
+
+    // Deal base cards
+    for (let i = 0; i < game.players.length; i++) {
+      const playerIndex = shuffledPlayerIndices[i];
+      game.players[playerIndex].hand = game.deck.slice(deckIndex, deckIndex + baseCardsPerPlayer);
+      cardsDealt[playerIndex] = baseCardsPerPlayer;
+      deckIndex += baseCardsPerPlayer;
+    }
+
+    // Deal remaining cards to first 'extraCards' players
+    for (let i = 0; i < extraCards; i++) {
+      const playerIndex = shuffledPlayerIndices[i];
+      game.players[playerIndex].hand.push(game.deck[deckIndex]);
+      cardsDealt[playerIndex]++;
+      deckIndex++;
+    }
+
+    game.deck = [];
+    console.log(`Dealt cards: ${cardsDealt.map((count, i) => `${count} to ${game.players[i].name}`).join(', ')}`);
   }
 
-  // Fix: Update specific player's hand order without affecting others
   updateHandOrder(gameId: string, playerId: string, hand: Card[]): Game | null {
     const game = this.getGame(gameId);
     if (!game) {
@@ -142,20 +193,16 @@ export class GameService {
       console.log(`Player ${playerId} not found in game ${gameId}`);
       return null;
     }
-    // Verify hand contains same cards
-    const currentHandIds = new Set(player.hand.map(c => this.cardId(c)));
-    const newHandIds = new Set(hand.map(c => this.cardId(c)));
-    if (currentHandIds.size !== newHandIds.size || 
-        [...currentHandIds].some(id => !newHandIds.has(id))) {
-      console.log(`Invalid hand order update for ${playerId}, expected ${currentHandIds.size} cards, got ${newHandIds.size}`);
+    const currentHandIds = player.hand.map(c => this.cardId(c)).sort();
+    const newHandIds = hand.map(c => this.cardId(c)).sort();
+    if (currentHandIds.length !== newHandIds.length || currentHandIds.some((id, i) => id !== newHandIds[i])) {
+      console.log(`Invalid hand order update for ${playerId}: Hand mismatch`);
       return null;
     }
     player.hand = hand;
-    console.log(`Updated hand order for ${playerId}:`, 
-      player.hand.map(c => c.isJoker ? `${c.suit} (${c.assignedRank} of ${c.assignedSuit})` : `${c.rank} of ${c.suit}`));
+    console.log(`Updated hand order for ${playerId}`);
     return game;
   }
-  
 
   playPattern(gameId: string, playerId: string, cards: Card[], hand: Card[]): Game | null {
     const game = this.getGame(gameId);
@@ -164,64 +211,55 @@ export class GameService {
       return null;
     }
 
-    console.log(`Player ${playerId} playing cards:`, 
-      cards.map(c => c.isJoker ? `${c.assignedRank} of ${c.assignedSuit}` : c.isDetails ? 'Details' : `${c.rank} of ${c.suit}`));
-    
-    // Fix Bug 2: Validate cards are in player's hand and unique
-    // Fix Joker: Match Jokers by suit and isJoker, update hand with assigned values
     const player = game.players.find(p => p.id === playerId)!;
-    const handCardIds = new Map(player.hand.map(c => [this.jokerCardId(c), c]));
-    const playedCardIds = cards.map(c => this.jokerCardId(c));
-    const uniquePlayedCardIds = new Set(playedCardIds);
-    if (playedCardIds.length !== uniquePlayedCardIds.size) {
-      console.log(`Invalid play for ${playerId}: Duplicate cards detected`, playedCardIds);
-      return null;
-    }
-    if (!playedCardIds.every(id => handCardIds.has(id))) {
-      console.log(`Invalid play for ${playerId}: Cards not in hand`, playedCardIds);
+    console.log(`Attempting play by ${playerId}: ${cards.map(c => c.isJoker ? `${c.assignedRank} of ${c.assignedSuit}` : c.isDetails ? 'Details' : `${c.rank} of ${c.suit}`).join(', ')}`);
+
+    if (game.isTestMode) {
+      if (this.validatePattern(cards, null, null, false)) {
+        player.hand = hand;
+        game.pile.push(cards);
+        game.passCount = 0;
+        game.lastPlayedPlayerId = playerId;
+        this.updatePattern(cards, game);
+        console.log(`Test mode play successful, pile: ${game.pile.length}, pattern: ${game.currentPattern}`);
+        if (player.hand.length === 0) {
+          this.assignTitles(game);
+        }
+        return game;
+      }
+      console.log(`Invalid pattern in test mode for ${playerId}`);
       return null;
     }
 
-    // Fix Joker: Update player's hand with assigned Joker values
-    const updatedHand = hand.map(c => {
-      const playedCard = cards.find(pc => this.jokerCardId(pc) === this.jokerCardId(c));
-      if (playedCard && playedCard.isJoker) {
-        return { ...c, assignedRank: playedCard.assignedRank, assignedSuit: playedCard.assignedSuit };
-      }
-      return c;
-    });
-    const playedJokerCardIds = new Set(cards.filter(c => c.isJoker).map(c => this.jokerCardId(c)));
-    const remainingHand = updatedHand.filter(c => !playedCardIds.includes(this.jokerCardId(c)));
-    if (remainingHand.length !== player.hand.length - cards.length) {
-      console.log(`Invalid hand for ${playerId}, expected ${player.hand.length - cards.length} cards, got ${remainingHand.length}`);
+    const handCardIds = player.hand.map(c => this.cardId(c));
+    const playedCardIds = cards.map(c => this.cardId(c));
+    console.log(`Played card IDs: ${playedCardIds.join(', ')}`);
+    if (!playedCardIds.every(id => handCardIds.includes(id))) {
+      console.log(`Invalid play for ${playerId}: Cards not in hand`, { playedCardIds, handCardIds });
+      return null;
+    }
+
+    const remainingHand = player.hand.filter(c => !playedCardIds.includes(this.cardId(c)));
+    const submittedHandIds = hand.map(c => this.cardId(c)).sort();
+    const expectedHandIds = remainingHand.map(c => this.cardId(c)).sort();
+    if (submittedHandIds.length !== expectedHandIds.length || submittedHandIds.some((id, i) => id !== expectedHandIds[i])) {
+      console.log(`Invalid hand for ${playerId}: Hand mismatch`, {
+        submittedHandIds,
+        expectedHandIds,
+        difference: submittedHandIds.filter(id => !expectedHandIds.includes(id))
+      });
       return null;
     }
 
     const prevPattern = game.pile.length > 0 ? game.pile[game.pile.length - 1] : null;
-    if (this.validatePattern(cards, prevPattern, game.currentPattern)) {
-      player.hand = remainingHand;
-      console.log(`Player ${playerId} new hand order:`, 
-        player.hand.map(c => c.isJoker ? `${c.suit} (${c.assignedRank} of ${c.assignedSuit})` : `${c.rank} of ${c.suit}`));
+    if (this.validatePattern(cards, prevPattern, game.currentPattern, false)) {
+      player.hand = hand;
       game.pile.push(cards);
       game.passCount = 0;
       game.lastPlayedPlayerId = playerId;
-      if (game.currentPattern == null) {
-        if (cards.length === 1) {
-          game.currentPattern = 'single';
-        } else if (cards.length === 2 && cards.every(c => 
-          (c.isJoker ? c.assignedRank : c.rank) === (cards[0].isJoker ? cards[0].assignedRank : cards[0].rank)
-        )) {
-          game.currentPattern = 'pair';
-        } else if (cards.length >= 3 && cards.length <= 4 && cards.every(c => 
-          (c.isJoker ? c.assignedRank : c.rank) === (cards[0].isJoker ? c.assignedRank : c.rank)
-        )) {
-          game.currentPattern = `group-${cards.length}`;
-        } else if (cards.length >= 2) {
-          game.currentPattern = 'consecutive';
-        }
-      }
-      game.currentTurn = game.isTestMode ? 0 : (game.currentTurn + 1) % game.players.length;
-      console.log(`Play successful, pile:`, game.pile, `passCount: ${game.passCount}, pattern: ${game.currentPattern}`);
+      this.updatePattern(cards, game);
+      game.currentTurn = (game.currentTurn + 1) % game.players.length;
+      console.log(`Play successful, pile: ${game.pile.length}, pattern: ${game.currentPattern}`);
 
       if (player.hand.length === 0) {
         this.assignTitles(game);
@@ -230,24 +268,44 @@ export class GameService {
       return game;
     }
 
-    console.log('Invalid pattern');
+    console.log(`Invalid pattern for ${playerId}`);
     return null;
   }
 
   pass(gameId: string, playerId: string): Game | null {
     const game = this.getGame(gameId);
-    if (!game || (!game.isTestMode && game.players[game.currentTurn].id !== playerId)) {
-      console.log('Invalid pass attempt', { gameId, playerId });
+    if (!game) {
+      console.log(`Invalid pass attempt: Game ${gameId} not found`);
       return null;
     }
+    if (!game.isTestMode && game.players[game.currentTurn].id !== playerId) {
+      console.log(`Invalid pass attempt: Not ${playerId}'s turn`, {
+        gameId,
+        playerId,
+        currentTurn: game.currentTurn,
+        expectedPlayerId: game.players[game.currentTurn].id
+      });
+      return null;
+    }
+    if (game.isTestMode) {
+      console.log(`Pass ignored in test mode for ${playerId}`);
+      return game; // No-op in test mode
+    }
     game.passCount++;
-    game.currentTurn = game.isTestMode ? 0 : (game.currentTurn + 1) % game.players.length;
-    if (game.passCount >= game.players.length) {
+    if (game.passCount >= game.players.length - 1) {
       game.pile = [];
       game.passCount = 0;
       game.currentPattern = null;
+      // Start next round with last played player or player 0
+      const nextPlayerIndex = game.lastPlayedPlayerId
+        ? game.players.findIndex(p => p.id === game.lastPlayedPlayerId)
+        : 0;
+      game.currentTurn = nextPlayerIndex >= 0 ? nextPlayerIndex : 0;
+      console.log(`New round started for game ${gameId}, starting player: ${game.players[game.currentTurn].id}`);
+    } else {
+      game.currentTurn = (game.currentTurn + 1) % game.players.length;
     }
-    console.log(`Player ${playerId} passed, passCount: ${game.passCount}`);
+    console.log(`Player ${playerId} passed, passCount: ${game.passCount}, currentTurn: ${game.players[game.currentTurn].id}`);
     return game;
   }
 
@@ -257,63 +315,56 @@ export class GameService {
       console.log('Invalid take chance attempt', { gameId, playerId });
       return null;
     }
-    console.log(`Player ${playerId} taking chance with cards:`, 
-      cards.map(c => c.isJoker ? `${c.assignedRank} of ${c.assignedSuit}` : c.isDetails ? 'Details' : `${c.rank} of ${c.suit}`));
-    
-    // Fix Bug 2: Validate cards are in player's hand and unique
-    // Fix Joker: Match Jokers by suit and isJoker, update hand with assigned values
+
     const player = game.players.find(p => p.id === playerId)!;
-    const handCardIds = new Map(player.hand.map(c => [this.jokerCardId(c), c]));
-    const playedCardIds = cards.map(c => this.jokerCardId(c));
-    const uniquePlayedCardIds = new Set(playedCardIds);
-    if (playedCardIds.length !== uniquePlayedCardIds.size) {
-      console.log(`Invalid take chance for ${playerId}: Duplicate cards detected`, playedCardIds);
-      return null;
-    }
-    if (!playedCardIds.every(id => handCardIds.has(id))) {
-      console.log(`Invalid take chance for ${playerId}: Cards not in hand`, playedCardIds);
+    console.log(`Attempting take chance by ${playerId}: ${cards.map(c => c.isJoker ? `${c.assignedRank} of ${c.assignedSuit}` : c.isDetails ? 'Details' : `${c.rank} of ${c.suit}`).join(', ')}`);
+
+    if (game.isTestMode) {
+      if (this.validatePattern(cards, null, null, false)) {
+        player.hand = hand;
+        game.pile.push(cards);
+        game.passCount = 0;
+        game.lastPlayedPlayerId = playerId;
+        this.updatePattern(cards, game);
+        console.log(`Test mode take chance successful, pile: ${game.pile.length}, pattern: ${game.currentPattern}`);
+        if (player.hand.length === 0) {
+          this.assignTitles(game);
+        }
+        return game;
+      }
+      console.log(`Invalid pattern in test mode for ${playerId}`);
       return null;
     }
 
-    // Fix Joker: Update player's hand with assigned Joker values
-    const updatedHand = hand.map(c => {
-      const playedCard = cards.find(pc => this.jokerCardId(pc) === this.jokerCardId(c));
-      if (playedCard && playedCard.isJoker) {
-        return { ...c, assignedRank: playedCard.assignedRank, assignedSuit: playedCard.assignedSuit };
-      }
-      return c;
-    });
-    const remainingHand = updatedHand.filter(c => !playedCardIds.includes(this.jokerCardId(c)));
-    if (remainingHand.length !== player.hand.length - cards.length) {
-      console.log(`Invalid hand for ${playerId}, expected ${player.hand.length - cards.length} cards, got ${remainingHand.length}`);
+    const handCardIds = player.hand.map(c => this.cardId(c));
+    const playedCardIds = cards.map(c => this.cardId(c));
+    console.log(`Played card IDs: ${playedCardIds.join(', ')}`);
+    if (!playedCardIds.every(id => handCardIds.includes(id))) {
+      console.log(`Invalid take chance for ${playerId}: Cards not in hand`, { playedCardIds, handCardIds });
+      return null;
+    }
+
+    const remainingHand = player.hand.filter(c => !playedCardIds.includes(this.cardId(c)));
+    const submittedHandIds = hand.map(c => this.cardId(c)).sort();
+    const expectedHandIds = remainingHand.map(c => this.cardId(c)).sort();
+    if (submittedHandIds.length !== expectedHandIds.length || submittedHandIds.some((id, i) => id !== expectedHandIds[i])) {
+      console.log(`Invalid hand for ${playerId}: Hand mismatch`, {
+        submittedHandIds,
+        expectedHandIds,
+        difference: submittedHandIds.filter(id => !expectedHandIds.includes(id))
+      });
       return null;
     }
 
     const prevPattern = game.pile.length > 0 ? game.pile[game.pile.length - 1] : null;
-    if (this.validatePattern(cards, prevPattern, game.currentPattern)) {
-      player.hand = remainingHand;
-      console.log(`Player ${playerId} new hand order:`, 
-        player.hand.map(c => c.isJoker ? `${c.suit} (${c.assignedRank} of ${c.assignedSuit})` : `${c.rank} of ${c.suit}`));
+    if (this.validatePattern(cards, prevPattern, game.currentPattern, true)) {
+      player.hand = hand;
       game.pile.push(cards);
       game.passCount = 0;
       game.lastPlayedPlayerId = playerId;
-      if (game.currentPattern == null) {
-        if (cards.length === 1) {
-          game.currentPattern = 'single';
-        } else if (cards.length === 2 && cards.every(c => 
-          (c.isJoker ? c.assignedRank : c.rank) === (cards[0].isJoker ? cards[0].assignedRank : c.rank)
-        )) {
-          game.currentPattern = 'pair';
-        } else if (cards.length >= 3 && cards.length <= 4 && cards.every(c => 
-          (c.isJoker ? c.assignedRank : c.rank) === (cards[0].isJoker ? c.assignedRank : c.rank)
-        )) {
-          game.currentPattern = `group-${cards.length}`;
-        } else if (cards.length >= 2) {
-          game.currentPattern = 'consecutive';
-        }
-      }
-      game.currentTurn = game.isTestMode ? 0 : (game.currentTurn + 1) % game.players.length;
-      console.log(`Take chance successful, pile:`, game.pile, `passCount: ${game.passCount}, pattern: ${game.currentPattern}`);
+      this.updatePattern(cards, game);
+      game.currentTurn = (game.currentTurn + 1) % game.players.length;
+      console.log(`Take chance successful, pile: ${game.pile.length}, pattern: ${game.currentPattern}`);
 
       if (player.hand.length === 0) {
         this.assignTitles(game);
@@ -322,19 +373,46 @@ export class GameService {
       return game;
     }
 
-    console.log('Invalid pattern for take chance');
+    console.log(`Invalid pattern for take chance by ${playerId}`);
     return null;
   }
-  validatePattern(cards: Card[], prevPattern: Card[] | null, currentPattern: string | null): boolean {
-    if (cards.length === 0) return false;
-    
-    // Fix Bug 1: Details card only valid as single card
+
+  private updatePattern(cards: Card[], game: Game): void {
+    if (game.currentPattern == null) {
+      if (cards.length === 1) {
+        game.currentPattern = 'single';
+      } else if (cards.length >= 2) {
+        const effectiveCards = cards.map(c => ({
+          ...c,
+          rank: c.isJoker ? c.assignedRank : c.rank,
+        }));
+        const sortedCards = [...effectiveCards].sort((a, b) => this.getCardValue(a) - this.getCardValue(b));
+        const isConsecutive = sortedCards.every((c, i) => i === 0 || this.getCardValue(c) === this.getCardValue(sortedCards[i - 1]) + 1);
+        if (isConsecutive) {
+          game.currentPattern = 'consecutive';
+        } else if (cards.length === 2 && cards.every(c => (c.isJoker ? c.assignedRank : c.rank) === (cards[0].isJoker ? c.assignedRank : c.rank))) {
+          game.currentPattern = 'pair';
+        } else if (cards.length >= 3 && cards.length <= 4 && cards.every(c => (c.isJoker ? c.assignedRank : c.rank) === (cards[0].isJoker ? c.assignedRank : c.rank))) {
+          game.currentPattern = `group-${cards.length}`;
+        } else {
+          console.log('Invalid pattern: Cards do not form a valid pattern');
+        }
+      }
+    }
+  }
+
+  validatePattern(cards: Card[], prevPattern: Card[] | null, currentPattern: string | null, isTakeChance: boolean): boolean {
+    if (cards.length === 0) {
+      console.log('Invalid pattern: No cards played');
+      return false;
+    }
+
     if (cards.some(c => c.isDetails)) {
       if (cards.length !== 1) {
-        console.log('Invalid pattern: Details card can only be played as a single card');
+        console.log('Invalid pattern: Details card can only be played alone');
         return false;
       }
-      if (prevPattern && prevPattern.some(c => c.isDetails)) {
+      if (prevPattern && prevPattern.some(c => c.isDetails) && !isTakeChance) {
         console.log('Invalid pattern: Cannot play Details card over another Details card');
         return false;
       }
@@ -359,22 +437,35 @@ export class GameService {
       patternType = 'single';
     } else if (effectiveCards.length === 2 && effectiveCards.every(c => c.rank === effectiveCards[0].rank)) {
       patternType = 'pair';
-    } else if (effectiveCards.length >= 3 && effectiveCards.length <= 4 && 
-               effectiveCards.every(c => c.rank === effectiveCards[0].rank)) {
+    } else if (effectiveCards.length >= 3 && effectiveCards.length <= 4 && effectiveCards.every(c => c.rank === effectiveCards[0].rank)) {
       patternType = `group-${effectiveCards.length}`;
-    } else if (effectiveCards.length >= 2) {
+    } else if (effectiveCards.length >= 2 && effectiveCards.length <= 13) {
       const sortedCards = [...effectiveCards].sort((a, b) => this.getCardValue(a) - this.getCardValue(b));
-      const sameSuit = sortedCards.every(c => c.suit === sortedCards[0].suit);
-      const isConsecutive = sortedCards.every((c, i) => 
-        i === 0 || this.getCardValue(c) === this.getCardValue(sortedCards[i - 1]) + 1
-      );
-      if (sameSuit && isConsecutive) {
+      const isConsecutive = sortedCards.every((c, i) => i === 0 || this.getCardValue(c) === this.getCardValue(sortedCards[i - 1]) + 1);
+      if (isConsecutive) {
+        const sameSuit = effectiveCards.every(c => c.suit === effectiveCards[0].suit);
+        if (!sameSuit) {
+          console.log('Invalid consecutive pattern: Cards must be same suit');
+          return false;
+        }
         patternType = 'consecutive';
       } else {
+        console.log('Invalid consecutive pattern: Cards do not form a sequence');
         return false;
       }
     } else {
+      console.log(`Invalid pattern length: ${effectiveCards.length}`);
       return false;
+    }
+
+    // First play validation after pattern checks
+    if (prevPattern == null && currentPattern == null) {
+      if (patternType === 'consecutive' && !effectiveCards.every(c => c.suit === effectiveCards[0].suit)) {
+        console.log('Invalid first play: Consecutive pattern must be same suit');
+        return false;
+      }
+      console.log(`First play detected: ${patternType}`);
+      return true;
     }
 
     if (currentPattern != null && patternType !== currentPattern) {
@@ -382,40 +473,85 @@ export class GameService {
       return false;
     }
 
-    if (prevPattern == null) return true;
+    if (prevPattern != null) {
+      const effectivePrev = prevPattern.map(c => ({
+        ...c,
+        rank: c.isJoker ? c.assignedRank : c.rank,
+        suit: c.isJoker ? c.assignedSuit : c.suit,
+      }));
 
-    const effectivePrev = prevPattern.map(c => ({
-      ...c,
-      rank: c.isJoker ? c.assignedRank : c.rank,
-      suit: c.isJoker ? c.assignedSuit : c.suit,
-    }));
+      if (effectivePrev.some(c => c.isDetails)) {
+        console.log('Cannot play over Details card');
+        return false;
+      }
 
-    if (patternType === 'single' && prevPattern.length === 1) {
-      return this.getCardValue(effectiveCards[0]) > this.getCardValue(effectivePrev[0]);
+      if (patternType === 'single' && prevPattern.length === 1) {
+        const isValid = this.getCardValue(effectiveCards[0]) > this.getCardValue(effectivePrev[0]);
+        if (!isValid) {
+          console.log(`Invalid single: ${effectiveCards[0].rank} not higher than ${effectivePrev[0].rank}`);
+        }
+        return isValid;
+      }
+
+      if (patternType === 'pair' && prevPattern.length === 2) {
+        const isValid = this.getCardValue(effectiveCards[0]) > this.getCardValue(effectivePrev[0]);
+        if (!isValid) {
+          console.log(`Invalid pair: ${effectiveCards[0].rank} not higher than ${effectivePrev[0].rank}`);
+        }
+        return isValid;
+      }
+
+      if (patternType.startsWith('group-') && prevPattern.length === effectiveCards.length) {
+        const isValid = this.getCardValue(effectiveCards[0]) > this.getCardValue(effectivePrev[0]);
+        if (!isValid) {
+          console.log(`Invalid group: ${effectiveCards[0].rank} not higher than ${effectivePrev[0].rank}`);
+        }
+        return isValid;
+      }
+
+      if (patternType === 'consecutive' && prevPattern.length === effectiveCards.length) {
+        const sortedCards = [...effectiveCards].sort((a, b) => this.getCardValue(a) - this.getCardValue(b));
+        const sortedPrev = [...effectivePrev].sort((a, b) => this.getCardValue(a) - this.getCardValue(b));
+        const isValid = this.getCardValue(sortedCards[0]) > this.getCardValue(sortedPrev[sortedPrev.length - 1]);
+        if (!isValid) {
+          console.log(`Invalid consecutive: Starts at ${sortedCards[0].rank}, needs to be higher than ${sortedPrev[sortedPrev.length - 1].rank}`);
+        }
+        return isValid;
+      }
+
+      console.log('Pattern validation failed: Mismatched pattern types');
+      return false;
     }
 
-    if (patternType === 'pair' && prevPattern.length === 2) {
-      return this.getCardValue(effectiveCards[0]) > this.getCardValue(effectivePrev[0]);
+    if (isTakeChance) {
+      if (patternType === 'single' && this.getCardValue(effectiveCards[0]) === 16) {
+        return true; // Details card
+      }
+      if (patternType === 'single' && this.getCardValue(effectiveCards[0]) === 15) {
+        return true; // 2 is the highest single
+      }
+      if (patternType === 'pair' && this.getCardValue(effectiveCards[0]) === 15) {
+        return true; // Pair of 2s
+      }
+      if (patternType.startsWith('group-') && this.getCardValue(effectiveCards[0]) === 15) {
+        return true; // Group of 2s
+      }
+      if (patternType === 'consecutive') {
+        const sortedCards = [...effectiveCards].sort((a, b) => this.getCardValue(a) - this.getCardValue(b));
+        if (this.getCardValue(sortedCards[sortedCards.length - 1]) === 15) {
+          return true; // Consecutive ending at 2
+        }
+      }
+      console.log('Take chance failed: Not unbeatable');
+      return false;
     }
 
-    if (patternType.startsWith('group-') && prevPattern.length === effectiveCards.length) {
-      return this.getCardValue(effectiveCards[0]) > this.getCardValue(effectivePrev[0]);
-    }
-
-    if (patternType === 'consecutive' && prevPattern.length === effectiveCards.length) {
-      const sortedCards = [...effectiveCards].sort((a, b) => this.getCardValue(a) - this.getCardValue(b));
-      const sortedPrev = [...effectivePrev].sort((a, b) => this.getCardValue(a) - this.getCardValue(b));
-      return this.getCardValue(sortedCards[0]) > this.getCardValue(sortedPrev[sortedPrev.length - 1]);
-    }
-
-    return false;
+    return true;
   }
-
-
 
   getCardValue(card: Card): number {
     const effectiveRank = card.isJoker ? card.assignedRank : card.rank;
-    if (card.isDetails) return Infinity;
+    if (card.isDetails) return 16; // Highest value
     if (card.isJoker && !effectiveRank) return 0;
     const values: { [key: string]: number } = {
       '3': 3, '4': 4, '5': 5, '6': 6, '7': 7, '8': 8, '9': 9,
@@ -424,36 +560,60 @@ export class GameService {
     return values[effectiveRank!] || 0;
   }
 
-  assignTitles(game: Game) {
-    console.log(`Assigning titles for game ${game.id}`);
-    game.status = 'finished';
-    const finished = game.players.filter(p => p.hand.length === 0);
-    if (finished.length === 1) {
-      finished[0].title = 'King';
-    }
-  }
-
-  
-  // Fix: Unique card identifier for matching
-  private cardId(card: Card): string {
-    return JSON.stringify({
-      suit: card.suit,
-      rank: card.rank,
-      isJoker: card.isJoker,
-      isDetails: card.isDetails,
-      assignedRank: card.assignedRank,
-      assignedSuit: card.assignedSuit,
-    });
-  }
-  // Fix Joker: Card identifier for play validation, matching Jokers by suit
-  private jokerCardId(card: Card): string {
-    if (card.isJoker) {
-      return JSON.stringify({
-        suit: card.suit,
-        isJoker: card.isJoker,
+  assignTitles(game: Game): void {
+    const finishedPlayers = game.players
+      .filter(p => p.hand.length === 0)
+      .sort((a, b) => {
+        const aIndex = game.players.findIndex(p => p.id === a.id);
+        const bIndex = game.players.findIndex(p => p.id === b.id);
+        return aIndex - bIndex;
       });
+
+    const remainingPlayers = game.players.filter(p => p.hand.length > 0);
+
+    finishedPlayers.forEach((player, index) => {
+      if (index === 0) {
+        player.title = 'King';
+      } else if (index === 1) {
+        player.title = 'Wise';
+      } else {
+        player.title = 'Civilian';
+      }
+    });
+
+    remainingPlayers.forEach((player, index) => {
+      if (index === remainingPlayers.length - 1) {
+        player.title = 'Beggar';
+      } else {
+        player.title = 'Civilian';
+      }
+    });
+
+    const king = game.players.find(p => p.title === 'King');
+    const beggar = game.players.find(p => p.title === 'Beggar');
+    if (king && beggar && beggar.hand.length > 0) {
+      const highestCard = beggar.hand.reduce((max, card) => {
+        if (card.isDetails || card.isJoker) return max;
+        return this.getCardValue(card) > this.getCardValue(max) ? card : max;
+      }, beggar.hand[0]);
+      if (highestCard) {
+        beggar.hand = beggar.hand.filter(c => c !== highestCard);
+        king.hand.push(highestCard);
+        console.log(`King took ${highestCard.rank} of ${highestCard.suit} from Beggar`);
+      }
+
+      const unwantedCard = king.hand[Math.floor(Math.random() * king.hand.length)];
+      if (unwantedCard) {
+        king.hand = king.hand.filter(c => c !== unwantedCard);
+        beggar.hand.push(unwantedCard);
+        console.log(`King gave ${unwantedCard.rank} of ${unwantedCard.suit} to Beggar`);
+      }
     }
-    return this.cardId(card);
+
+    console.log('Titles assigned:', game.players.map(p => ({ name: p.name, title: p.title })));
   }
 
+  private cardId(card: Card): string {
+    return `${card.suit || 'none'}-${card.rank || 'none'}-${card.isJoker}-${card.isDetails}`;
+  }
 }

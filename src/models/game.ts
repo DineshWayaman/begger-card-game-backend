@@ -3,6 +3,7 @@ import { Card } from './card';
 
 export interface Game {
   id: string;
+  deck: Card[];
   players: Player[];
   pile: Card[][];
   currentTurn: number;
@@ -10,6 +11,5 @@ export interface Game {
   isTestMode: boolean;
   passCount: number;
   lastPlayedPlayerId: string | null;
-  currentPattern: 'single' | 'pair' | 'consecutive' | `group-${number}` | null; // Current pattern
- 
+  currentPattern: 'single' | 'pair' | 'consecutive' | `group-${number}` | null;
 }
