@@ -561,52 +561,55 @@ export class GameService {
   }
 
   assignTitles(game: Game): void {
+    // Get players who have just finished (hand length = 0 and no title yet)
     const finishedPlayers = game.players
-      .filter(p => p.hand.length === 0)
+      .filter(p => p.hand.length === 0 && p.title == null)
       .sort((a, b) => {
         const aIndex = game.players.findIndex(p => p.id === a.id);
         const bIndex = game.players.findIndex(p => p.id === b.id);
         return aIndex - bIndex;
       });
 
+    // Get players who still have cards
     const remainingPlayers = game.players.filter(p => p.hand.length > 0);
 
-    finishedPlayers.forEach((player, index) => {
-      if (index === 0) {
+    // Assign titles to newly finished players
+    let titleIndex = game.players.filter(p => p.title != null && p.title !== 'Beggar').length;
+    for (const player of finishedPlayers) {
+      if (titleIndex === 0) {
         player.title = 'King';
-      } else if (index === 1) {
+      } else if (titleIndex === 1) {
         player.title = 'Wise';
       } else {
         player.title = 'Civilian';
       }
-    });
+      titleIndex++;
+    }
 
-    remainingPlayers.forEach((player, index) => {
-      if (index === remainingPlayers.length - 1) {
-        player.title = 'Beggar';
-      } else {
-        player.title = 'Civilian';
-      }
-    });
+    // Assign Beggar when exactly one player remains with cards
+    if (remainingPlayers.length === 1 && game.players.length > 2) {
+      const beggar = remainingPlayers[0];
+      beggar.title = 'Beggar';
 
-    const king = game.players.find(p => p.title === 'King');
-    const beggar = game.players.find(p => p.title === 'Beggar');
-    if (king && beggar && beggar.hand.length > 0) {
-      const highestCard = beggar.hand.reduce((max, card) => {
-        if (card.isDetails || card.isJoker) return max;
-        return this.getCardValue(card) > this.getCardValue(max) ? card : max;
-      }, beggar.hand[0]);
-      if (highestCard) {
-        beggar.hand = beggar.hand.filter(c => c !== highestCard);
-        king.hand.push(highestCard);
-        console.log(`King took ${highestCard.rank} of ${highestCard.suit} from Beggar`);
-      }
+      // Perform card exchange between King and Beggar
+      const king = game.players.find(p => p.title === 'King');
+      if (king && beggar && beggar.hand.length > 0) {
+        const highestCard = beggar.hand.reduce((max, card) => {
+          if (card.isDetails || card.isJoker) return max;
+          return this.getCardValue(card) > this.getCardValue(max) ? card : max;
+        }, beggar.hand[0]);
+        if (highestCard) {
+          beggar.hand = beggar.hand.filter(c => c !== highestCard);
+          king.hand.push(highestCard);
+          console.log(`King took ${highestCard.rank} of ${highestCard.suit} from Beggar`);
+        }
 
-      const unwantedCard = king.hand[Math.floor(Math.random() * king.hand.length)];
-      if (unwantedCard) {
-        king.hand = king.hand.filter(c => c !== unwantedCard);
-        beggar.hand.push(unwantedCard);
-        console.log(`King gave ${unwantedCard.rank} of ${unwantedCard.suit} to Beggar`);
+        const unwantedCard = king.hand[Math.floor(Math.random() * king.hand.length)];
+        if (unwantedCard) {
+          king.hand = king.hand.filter(c => c !== unwantedCard);
+          beggar.hand.push(unwantedCard);
+          console.log(`King gave ${unwantedCard.rank} of ${unwantedCard.suit} to Beggar`);
+        }
       }
     }
 
