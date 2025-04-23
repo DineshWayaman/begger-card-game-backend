@@ -140,6 +140,36 @@ export class GameService {
     return this.startGame(gameId);
   }
 
+  restartGame(gameId: string, playerId: string): { game: Game | null; dismissDialog: boolean } {
+    const game = this.getGame(gameId);
+    if (!game) {
+      console.log(`Cannot restart game ${gameId}: Game not found`);
+      return { game: null, dismissDialog: false };
+    }
+    if (!game.players.some(p => p.id === playerId)) {
+      console.log(`Player ${playerId} not in game ${gameId}`);
+      return { game: null, dismissDialog: false };
+    }
+    // Clear titles first to prevent dialog reappearing
+    game.players.forEach(player => {
+      player.title = null;
+    });
+    game.deck = this.createDeck();
+    game.pile = [];
+    game.currentTurn = 0;
+    game.status = 'playing';
+    game.passCount = 0;
+    game.currentPattern = null;
+    game.lastPlayedPlayerId = null;
+    game.players.forEach(player => {
+      player.hand = [];
+    });
+    this.shuffle(game.deck);
+    this.deal(game);
+    console.log(`Game ${gameId} restarted with ${game.players.length} players`);
+    return { game, dismissDialog: true };
+  }
+
   shuffle(deck: Card[]): void {
     for (let i = deck.length - 1; i > 0; i--) {
       const j = Math.floor(Math.random() * (i + 1));
@@ -152,7 +182,6 @@ export class GameService {
     const totalCards = game.deck.length;
     const extraCards = totalCards % game.players.length;
 
-    // Shuffle players to randomize who gets extra card
     const shuffledPlayerIndices = Array.from({ length: game.players.length }, (_, i) => i);
     for (let i = shuffledPlayerIndices.length - 1; i > 0; i--) {
       const j = Math.floor(Math.random() * (i + 1));
@@ -162,7 +191,6 @@ export class GameService {
     let deckIndex = 0;
     const cardsDealt: number[] = new Array(game.players.length).fill(0);
 
-    // Deal base cards
     for (let i = 0; i < game.players.length; i++) {
       const playerIndex = shuffledPlayerIndices[i];
       game.players[playerIndex].hand = game.deck.slice(deckIndex, deckIndex + baseCardsPerPlayer);
@@ -170,7 +198,6 @@ export class GameService {
       deckIndex += baseCardsPerPlayer;
     }
 
-    // Deal remaining cards to first 'extraCards' players
     for (let i = 0; i < extraCards; i++) {
       const playerIndex = shuffledPlayerIndices[i];
       game.players[playerIndex].hand.push(game.deck[deckIndex]);
@@ -289,14 +316,22 @@ export class GameService {
     }
     if (game.isTestMode) {
       console.log(`Pass ignored in test mode for ${playerId}`);
-      return game; // No-op in test mode
+      return game;
+    }
+    const player = game.players.find(p => p.id === playerId);
+    if (!player) {
+      console.log(`Player ${playerId} not found in game ${gameId}`);
+      return null;
+    }
+    if (game.pile.length === 0 && game.passCount === 0 && player.hand.length > 0) {
+      console.log(`Invalid pass attempt: ${playerId} cannot pass as new round starter with cards`);
+      return null;
     }
     game.passCount++;
     if (game.passCount >= game.players.length - 1) {
       game.pile = [];
       game.passCount = 0;
       game.currentPattern = null;
-      // Start next round with last played player or player 0
       const nextPlayerIndex = game.lastPlayedPlayerId
         ? game.players.findIndex(p => p.id === game.lastPlayedPlayerId)
         : 0;
@@ -458,7 +493,6 @@ export class GameService {
       return false;
     }
 
-    // First play validation after pattern checks
     if (prevPattern == null && currentPattern == null) {
       if (patternType === 'consecutive' && !effectiveCards.every(c => c.suit === effectiveCards[0].suit)) {
         console.log('Invalid first play: Consecutive pattern must be same suit');
@@ -525,21 +559,21 @@ export class GameService {
 
     if (isTakeChance) {
       if (patternType === 'single' && this.getCardValue(effectiveCards[0]) === 16) {
-        return true; // Details card
+        return true;
       }
       if (patternType === 'single' && this.getCardValue(effectiveCards[0]) === 15) {
-        return true; // 2 is the highest single
+        return true;
       }
       if (patternType === 'pair' && this.getCardValue(effectiveCards[0]) === 15) {
-        return true; // Pair of 2s
+        return true;
       }
       if (patternType.startsWith('group-') && this.getCardValue(effectiveCards[0]) === 15) {
-        return true; // Group of 2s
+        return true;
       }
       if (patternType === 'consecutive') {
         const sortedCards = [...effectiveCards].sort((a, b) => this.getCardValue(a) - this.getCardValue(b));
         if (this.getCardValue(sortedCards[sortedCards.length - 1]) === 15) {
-          return true; // Consecutive ending at 2
+          return true;
         }
       }
       console.log('Take chance failed: Not unbeatable');
@@ -551,7 +585,7 @@ export class GameService {
 
   getCardValue(card: Card): number {
     const effectiveRank = card.isJoker ? card.assignedRank : card.rank;
-    if (card.isDetails) return 16; // Highest value
+    if (card.isDetails) return 16;
     if (card.isJoker && !effectiveRank) return 0;
     const values: { [key: string]: number } = {
       '3': 3, '4': 4, '5': 5, '6': 6, '7': 7, '8': 8, '9': 9,
@@ -561,7 +595,6 @@ export class GameService {
   }
 
   assignTitles(game: Game): void {
-    // Get players who have just finished (hand length = 0 and no title yet)
     const finishedPlayers = game.players
       .filter(p => p.hand.length === 0 && p.title == null)
       .sort((a, b) => {
@@ -570,10 +603,8 @@ export class GameService {
         return aIndex - bIndex;
       });
 
-    // Get players who still have cards
     const remainingPlayers = game.players.filter(p => p.hand.length > 0);
 
-    // Assign titles to newly finished players
     let titleIndex = game.players.filter(p => p.title != null && p.title !== 'Beggar').length;
     for (const player of finishedPlayers) {
       if (titleIndex === 0) {
@@ -586,37 +617,13 @@ export class GameService {
       titleIndex++;
     }
 
-    // Assign Beggar when exactly one player remains with cards
     if (remainingPlayers.length === 1 && game.players.length > 2) {
       const beggar = remainingPlayers[0];
       beggar.title = 'Beggar';
-
-      // Perform card exchange between King and Beggar
-      const king = game.players.find(p => p.title === 'King');
-      if (king && beggar && beggar.hand.length > 0) {
-        const highestCard = beggar.hand.reduce((max, card) => {
-          if (card.isDetails || card.isJoker) return max;
-          return this.getCardValue(card) > this.getCardValue(max) ? card : max;
-        }, beggar.hand[0]);
-        if (highestCard) {
-          beggar.hand = beggar.hand.filter(c => c !== highestCard);
-          king.hand.push(highestCard);
-          console.log(`King took ${highestCard.rank} of ${highestCard.suit} from Beggar`);
-        }
-
-        const unwantedCard = king.hand[Math.floor(Math.random() * king.hand.length)];
-        if (unwantedCard) {
-          king.hand = king.hand.filter(c => c !== unwantedCard);
-          beggar.hand.push(unwantedCard);
-          console.log(`King gave ${unwantedCard.rank} of ${unwantedCard.suit} to Beggar`);
-        }
-      }
     }
-
-    console.log('Titles assigned:', game.players.map(p => ({ name: p.name, title: p.title })));
   }
 
   private cardId(card: Card): string {
-    return `${card.suit || 'none'}-${card.rank || 'none'}-${card.isJoker}-${card.isDetails}`;
+    return `${card.suit ?? 'none'}-${card.rank ?? 'none'}-${card.isJoker}-${card.isDetails}`;
   }
 }
