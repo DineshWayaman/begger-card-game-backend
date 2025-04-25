@@ -156,12 +156,17 @@ export class GameService {
       console.log(`Player ${playerId} not in game ${gameId}`);
       return { game: null, dismissDialog: false };
     }
+
+    // Find the player with the "Wise" title
+    const wisePlayerIndex = game.players.findIndex(p => p.title === 'Wise');
+    console.log(`Wise player index: ${wisePlayerIndex} (player: ${wisePlayerIndex >= 0 ? game.players[wisePlayerIndex].name : 'none'})`);
+
+    // Reset game state
     game.players.forEach(player => {
       player.title = null;
     });
     game.deck = this.createDeck();
     game.pile = [];
-    game.currentTurn = 0;
     game.status = 'playing';
     game.passCount = 0;
     game.currentPattern = null;
@@ -169,9 +174,15 @@ export class GameService {
     game.players.forEach(player => {
       player.hand = [];
     });
+
+    // Shuffle and deal cards
     this.shuffle(game.deck);
     this.deal(game);
-    console.log(`Game ${gameId} restarted with ${game.players.length} players`);
+
+    // Set currentTurn to the Wise player, or 0 if no Wise player was found
+    game.currentTurn = wisePlayerIndex >= 0 ? wisePlayerIndex : 0;
+    console.log(`Game ${gameId} restarted with ${game.players.length} players, starting with player index ${game.currentTurn} (${game.players[game.currentTurn].name})`);
+
     return { game, dismissDialog: true };
   }
 
