@@ -1,3 +1,4 @@
+import { Server } from 'socket.io';
 import { Card } from '../models/card';
 import { Game } from '../models/game';
 import { Player } from '../models/player';
@@ -6,6 +7,11 @@ export class GameService {
   private games: { [key: string]: Game } = {};
   private readonly MIN_PLAYERS = 2;
   private readonly MAX_PLAYERS = 6;
+  private io: Server;
+
+  constructor(io: Server) {
+    this.io = io;
+  }
 
   createDeck(): Card[] {
     console.log('Creating deck');
@@ -150,7 +156,6 @@ export class GameService {
       console.log(`Player ${playerId} not in game ${gameId}`);
       return { game: null, dismissDialog: false };
     }
-    // Clear titles first to prevent dialog reappearing
     game.players.forEach(player => {
       player.title = null;
     });
@@ -242,7 +247,7 @@ export class GameService {
     console.log(`Attempting play by ${playerId}: ${cards.map(c => c.isJoker ? `${c.assignedRank} of ${c.assignedSuit}` : c.isDetails ? 'Details' : `${c.rank} of ${c.suit}`).join(', ')}`);
 
     if (game.isTestMode) {
-      if (this.validatePattern(cards, null, null, false)) {
+      if (this.validatePattern(cards, null, null)) {
         player.hand = hand;
         game.pile.push(cards);
         game.passCount = 0;
@@ -279,7 +284,7 @@ export class GameService {
     }
 
     const prevPattern = game.pile.length > 0 ? game.pile[game.pile.length - 1] : null;
-    if (this.validatePattern(cards, prevPattern, game.currentPattern, false)) {
+    if (this.validatePattern(cards, prevPattern, game.currentPattern)) {
       player.hand = hand;
       game.pile.push(cards);
       game.passCount = 0;
@@ -344,74 +349,6 @@ export class GameService {
     return game;
   }
 
-  takeChance(gameId: string, playerId: string, cards: Card[], hand: Card[]): Game | null {
-    const game = this.getGame(gameId);
-    if (!game || (!game.isTestMode && game.players[game.currentTurn].id !== playerId)) {
-      console.log('Invalid take chance attempt', { gameId, playerId });
-      return null;
-    }
-
-    const player = game.players.find(p => p.id === playerId)!;
-    console.log(`Attempting take chance by ${playerId}: ${cards.map(c => c.isJoker ? `${c.assignedRank} of ${c.assignedSuit}` : c.isDetails ? 'Details' : `${c.rank} of ${c.suit}`).join(', ')}`);
-
-    if (game.isTestMode) {
-      if (this.validatePattern(cards, null, null, false)) {
-        player.hand = hand;
-        game.pile.push(cards);
-        game.passCount = 0;
-        game.lastPlayedPlayerId = playerId;
-        this.updatePattern(cards, game);
-        console.log(`Test mode take chance successful, pile: ${game.pile.length}, pattern: ${game.currentPattern}`);
-        if (player.hand.length === 0) {
-          this.assignTitles(game);
-        }
-        return game;
-      }
-      console.log(`Invalid pattern in test mode for ${playerId}`);
-      return null;
-    }
-
-    const handCardIds = player.hand.map(c => this.cardId(c));
-    const playedCardIds = cards.map(c => this.cardId(c));
-    console.log(`Played card IDs: ${playedCardIds.join(', ')}`);
-    if (!playedCardIds.every(id => handCardIds.includes(id))) {
-      console.log(`Invalid take chance for ${playerId}: Cards not in hand`, { playedCardIds, handCardIds });
-      return null;
-    }
-
-    const remainingHand = player.hand.filter(c => !playedCardIds.includes(this.cardId(c)));
-    const submittedHandIds = hand.map(c => this.cardId(c)).sort();
-    const expectedHandIds = remainingHand.map(c => this.cardId(c)).sort();
-    if (submittedHandIds.length !== expectedHandIds.length || submittedHandIds.some((id, i) => id !== expectedHandIds[i])) {
-      console.log(`Invalid hand for ${playerId}: Hand mismatch`, {
-        submittedHandIds,
-        expectedHandIds,
-        difference: submittedHandIds.filter(id => !expectedHandIds.includes(id))
-      });
-      return null;
-    }
-
-    const prevPattern = game.pile.length > 0 ? game.pile[game.pile.length - 1] : null;
-    if (this.validatePattern(cards, prevPattern, game.currentPattern, true)) {
-      player.hand = hand;
-      game.pile.push(cards);
-      game.passCount = 0;
-      game.lastPlayedPlayerId = playerId;
-      this.updatePattern(cards, game);
-      game.currentTurn = (game.currentTurn + 1) % game.players.length;
-      console.log(`Take chance successful, pile: ${game.pile.length}, pattern: ${game.currentPattern}`);
-
-      if (player.hand.length === 0) {
-        this.assignTitles(game);
-      }
-
-      return game;
-    }
-
-    console.log(`Invalid pattern for take chance by ${playerId}`);
-    return null;
-  }
-
   private updatePattern(cards: Card[], game: Game): void {
     if (game.currentPattern == null) {
       if (cards.length === 1) {
@@ -436,7 +373,7 @@ export class GameService {
     }
   }
 
-  validatePattern(cards: Card[], prevPattern: Card[] | null, currentPattern: string | null, isTakeChance: boolean): boolean {
+  validatePattern(cards: Card[], prevPattern: Card[] | null, currentPattern: string | null): boolean {
     if (cards.length === 0) {
       console.log('Invalid pattern: No cards played');
       return false;
@@ -447,7 +384,7 @@ export class GameService {
         console.log('Invalid pattern: Details card can only be played alone');
         return false;
       }
-      if (prevPattern && prevPattern.some(c => c.isDetails) && !isTakeChance) {
+      if (prevPattern && prevPattern.some(c => c.isDetails)) {
         console.log('Invalid pattern: Cannot play Details card over another Details card');
         return false;
       }
@@ -557,29 +494,6 @@ export class GameService {
       return false;
     }
 
-    if (isTakeChance) {
-      if (patternType === 'single' && this.getCardValue(effectiveCards[0]) === 16) {
-        return true;
-      }
-      if (patternType === 'single' && this.getCardValue(effectiveCards[0]) === 15) {
-        return true;
-      }
-      if (patternType === 'pair' && this.getCardValue(effectiveCards[0]) === 15) {
-        return true;
-      }
-      if (patternType.startsWith('group-') && this.getCardValue(effectiveCards[0]) === 15) {
-        return true;
-      }
-      if (patternType === 'consecutive') {
-        const sortedCards = [...effectiveCards].sort((a, b) => this.getCardValue(a) - this.getCardValue(b));
-        if (this.getCardValue(sortedCards[sortedCards.length - 1]) === 15) {
-          return true;
-        }
-      }
-      console.log('Take chance failed: Not unbeatable');
-      return false;
-    }
-
     return true;
   }
 
@@ -614,13 +528,27 @@ export class GameService {
       } else {
         player.title = 'Civilian';
       }
+      this.io.to(game.id).emit('titleUpdate', {
+        playerId: player.id,
+        playerName: player.name,
+        title: player.title,
+        isBeggar: false,
+      });
       titleIndex++;
     }
 
     if (remainingPlayers.length === 1 && game.players.length > 2) {
       const beggar = remainingPlayers[0];
       beggar.title = 'Beggar';
+      this.io.to(game.id).emit('titleUpdate', {
+        playerId: beggar.id,
+        playerName: beggar.name,
+        title: beggar.title,
+        isBeggar: true,
+      });
     }
+
+    console.log('Titles assigned:', game.players.map(p => ({ name: p.name, title: p.title })));
   }
 
   private cardId(card: Card): string {
