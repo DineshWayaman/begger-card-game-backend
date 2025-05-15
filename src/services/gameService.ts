@@ -157,13 +157,15 @@ export class GameService {
       return { game: null, dismissDialog: false };
     }
 
-    // Find the player with the "Wise" title
+    // Find the player with the "Wise" title before resetting titles
     const wisePlayerIndex = game.players.findIndex(p => p.title === 'Wise');
-    console.log(`Wise player index: ${wisePlayerIndex} (player: ${wisePlayerIndex >= 0 ? game.players[wisePlayerIndex].name : 'none'})`);
+    const wisePlayerName = wisePlayerIndex >= 0 ? game.players[wisePlayerIndex].name : 'none';
+    console.log(`Wise player index: ${wisePlayerIndex} (player: ${wisePlayerName})`);
 
     // Reset game state
     game.players.forEach(player => {
       player.title = null;
+      player.hand = [];
     });
     game.deck = this.createDeck();
     game.pile = [];
@@ -171,9 +173,6 @@ export class GameService {
     game.passCount = 0;
     game.currentPattern = null;
     game.lastPlayedPlayerId = null;
-    game.players.forEach(player => {
-      player.hand = [];
-    });
 
     // Shuffle and deal cards
     this.shuffle(game.deck);
@@ -182,6 +181,9 @@ export class GameService {
     // Set currentTurn to the Wise player, or 0 if no Wise player was found
     game.currentTurn = wisePlayerIndex >= 0 ? wisePlayerIndex : 0;
     console.log(`Game ${gameId} restarted with ${game.players.length} players, starting with player index ${game.currentTurn} (${game.players[game.currentTurn].name})`);
+
+    // Emit gameUpdate to ensure all clients are synced
+    this.io.to(gameId).emit('gameUpdate', game);
 
     return { game, dismissDialog: true };
   }
@@ -560,6 +562,16 @@ export class GameService {
     }
 
     console.log('Titles assigned:', game.players.map(p => ({ name: p.name, title: p.title })));
+
+    // Check if all players have titles (game is over)
+    if (game.players.every(p => p.title != null)) {
+      const summaryMessage = game.players.map(p => `${p.name}: ${p.title}`).join('\n');
+      game.status = 'finished';
+      this.io.to(game.id).emit('gameOver', {
+        summaryMessage,
+      });
+      console.log(`Game ${game.id} ended. Summary: ${summaryMessage}`);
+    }
   }
 
   private cardId(card: Card): string {
