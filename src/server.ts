@@ -2,6 +2,7 @@ import express from 'express';
 import http from 'http';
 import { Server } from 'socket.io';
 import { GameService } from './services/gameService';
+import { VoiceSignalingService } from './services/voice_signaling_service';
 
 const app = express();
 const server = http.createServer(app);
@@ -13,6 +14,7 @@ const io = new Server(server, {
 });
 
 const gameService = new GameService(io);
+const voiceSignalingService = new VoiceSignalingService(io);
 
 app.get('/', (req, res) => {
   res.send('Beggar Card Game Server');
@@ -20,6 +22,9 @@ app.get('/', (req, res) => {
 
 io.on('connection', (socket) => {
   console.log(`New connection: ${socket.id}`);
+
+  // Handle voice signaling
+  voiceSignalingService.handleVoiceSignaling(socket);
 
   socket.on('join', (data) => {
     const { gameId, playerId, playerName, isTestMode } = data;
