@@ -124,7 +124,8 @@ export class GameService {
     game.status = 'playing';
     this.shuffle(game.deck);
     this.deal(game);
-    console.log(`Game ${gameId} started with ${game.players.length} players`);
+    game.currentTurn = this.getNextValidPlayerIndex(game, 0);
+    console.log(`Game ${gameId} started with ${game.players.length} players, starting with player ${game.players[game.currentTurn].name}`);
     return game;
   }
 
@@ -157,12 +158,10 @@ export class GameService {
       return { game: null, dismissDialog: false };
     }
 
-    // Find the player with the "Wise" title before resetting titles
     const wisePlayerIndex = game.players.findIndex(p => p.title === 'Wise');
     const wisePlayerName = wisePlayerIndex >= 0 ? game.players[wisePlayerIndex].name : 'none';
     console.log(`Wise player index: ${wisePlayerIndex} (player: ${wisePlayerName})`);
 
-    // Reset game state
     game.players.forEach(player => {
       player.title = null;
       player.hand = [];
@@ -174,15 +173,12 @@ export class GameService {
     game.currentPattern = null;
     game.lastPlayedPlayerId = null;
 
-    // Shuffle and deal cards
     this.shuffle(game.deck);
     this.deal(game);
 
-    // Set currentTurn to the Wise player, or 0 if no Wise player was found
-    game.currentTurn = wisePlayerIndex >= 0 ? wisePlayerIndex : 0;
+    game.currentTurn = wisePlayerIndex >= 0 ? wisePlayerIndex : this.getNextValidPlayerIndex(game, 0);
     console.log(`Game ${gameId} restarted with ${game.players.length} players, starting with player index ${game.currentTurn} (${game.players[game.currentTurn].name})`);
 
-    // Emit gameUpdate to ensure all clients are synced
     this.io.to(gameId).emit('gameUpdate', game);
 
     return { game, dismissDialog: true };
@@ -280,7 +276,7 @@ export class GameService {
     const playedCardIds = cards.map(c => this.cardId(c));
     console.log(`Played card IDs: ${playedCardIds.join(', ')}`);
     if (!playedCardIds.every(id => handCardIds.includes(id))) {
-      console.log(`Invalid play for ${playerId}: Cards not in hand`, { playedCardIds, handCardIds });
+      console.log(`Invalid play for ${playerId}: Cards not in hand`, { playerId ,cards, handCardIds });
       return null;
     }
 
@@ -303,11 +299,14 @@ export class GameService {
       game.passCount = 0;
       game.lastPlayedPlayerId = playerId;
       this.updatePattern(cards, game);
-      game.currentTurn = (game.currentTurn + 1) % game.players.length;
-      console.log(`Play successful, pile: ${game.pile.length}, pattern: ${game.currentPattern}`);
-
+      
       if (player.hand.length === 0) {
         this.assignTitles(game);
+      }
+
+      if (game.status !== 'finished') {
+        game.currentTurn = this.getNextValidPlayerIndex(game, (game.currentTurn + 1) % game.players.length);
+        console.log(`Play successful, pile: ${game.pile.length}, pattern: ${game.currentPattern}, next turn: ${game.players[game.currentTurn].name}`);
       }
 
       return game;
@@ -346,20 +345,38 @@ export class GameService {
       return null;
     }
     game.passCount++;
-    if (game.passCount >= game.players.length - 1) {
+    if (game.passCount >= game.players.filter(p => p.hand.length > 0).length - 1) {
       game.pile = [];
       game.passCount = 0;
       game.currentPattern = null;
       const nextPlayerIndex = game.lastPlayedPlayerId
         ? game.players.findIndex(p => p.id === game.lastPlayedPlayerId)
         : 0;
-      game.currentTurn = nextPlayerIndex >= 0 ? nextPlayerIndex : 0;
-      console.log(`New round started for game ${gameId}, starting player: ${game.players[game.currentTurn].id}`);
+      game.currentTurn = this.getNextValidPlayerIndex(game, nextPlayerIndex >= 0 ? nextPlayerIndex : 0);
+      console.log(`New round started for game ${gameId}, starting player: ${game.players[game.currentTurn].name}`);
     } else {
-      game.currentTurn = (game.currentTurn + 1) % game.players.length;
+      game.currentTurn = this.getNextValidPlayerIndex(game, (game.currentTurn + 1) % game.players.length);
     }
-    console.log(`Player ${playerId} passed, passCount: ${game.passCount}, currentTurn: ${game.players[game.currentTurn].id}`);
+    console.log(`Player ${playerId} passed, passCount: ${game.passCount}, next turn: ${game.players[game.currentTurn].name}`);
     return game;
+  }
+
+  private getNextValidPlayerIndex(game: Game, startIndex: number): number {
+    let index = startIndex;
+    const maxAttempts = game.players.length;
+    let attempts = 0;
+
+    while (attempts < maxAttempts) {
+      const player = game.players[index];
+      if (player.hand.length > 0) {
+        return index;
+      }
+      index = (index + 1) % game.players.length;
+      attempts++;
+    }
+
+    console.log(`No players with cards remaining in game ${game.id}`);
+    return index;
   }
 
   private updatePattern(cards: Card[], game: Game): void {
@@ -563,7 +580,6 @@ export class GameService {
 
     console.log('Titles assigned:', game.players.map(p => ({ name: p.name, title: p.title })));
 
-    // Check if all players have titles (game is over)
     if (game.players.every(p => p.title != null)) {
       const summaryMessage = game.players.map(p => `${p.name}: ${p.title}`).join('\n');
       game.status = 'finished';
