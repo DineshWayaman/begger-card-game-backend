@@ -1,4 +1,4 @@
-import { Server } from 'socket.io';
+import { Server, Socket } from 'socket.io';
 import { Card } from '../models/card';
 import { Game } from '../models/game';
 import { Player } from '../models/player';
@@ -11,6 +11,12 @@ export class GameService {
 
   constructor(io: Server) {
     this.io = io;
+    this.io.on('connection', (socket: Socket) => {
+      socket.on('leaveGame', (data) => {
+        const { gameId, playerId } = data;
+        this.leaveGame(gameId, playerId, socket);
+      });
+    });
   }
 
   createDeck(): Card[] {
@@ -182,6 +188,25 @@ export class GameService {
     this.io.to(gameId).emit('gameUpdate', game);
 
     return { game, dismissDialog: true };
+  }
+
+  leaveGame(gameId: string, playerId: string, socket: Socket): Game | null {
+    const game = this.getGame(gameId);
+    if (!game) {
+      console.log(`Cannot leave game ${gameId}: Game not found`);
+      return null;
+    }
+    const player = game.players.find(p => p.id === playerId);
+    if (!player) {
+      console.log(`Player ${playerId} not found in game ${gameId}`);
+      return null;
+    }
+    game.status = 'finished';
+    const message = `Game ended: ${player.name} has left the game.`;
+    console.log(`Player ${playerId} left game ${gameId}. Ending game for all players.`);
+    this.io.to(gameId).emit('gameEnded', { message });
+    delete this.games[gameId];
+    return game;
   }
 
   shuffle(deck: Card[]): void {
@@ -445,97 +470,61 @@ export class GameService {
       const sortedCards = [...effectiveCards].sort((a, b) => this.getCardValue(a) - this.getCardValue(b));
       const isConsecutive = sortedCards.every((c, i) => i === 0 || this.getCardValue(c) === this.getCardValue(sortedCards[i - 1]) + 1);
       if (isConsecutive) {
-        const sameSuit = effectiveCards.every(c => c.suit === effectiveCards[0].suit);
-        if (!sameSuit) {
-          console.log('Invalid consecutive pattern: Cards must be same suit');
-          return false;
-        }
         patternType = 'consecutive';
       } else {
-        console.log('Invalid consecutive pattern: Cards do not form a sequence');
+        console.log('Invalid pattern: Cards do not form a consecutive sequence');
         return false;
       }
     } else {
-      console.log(`Invalid pattern length: ${effectiveCards.length}`);
+      console.log(`Invalid pattern: Unsupported number of cards (${effectiveCards.length})`);
       return false;
     }
 
-    if (prevPattern == null && currentPattern == null) {
-      if (patternType === 'consecutive' && !effectiveCards.every(c => c.suit === effectiveCards[0].suit)) {
-        console.log('Invalid first play: Consecutive pattern must be same suit');
-        return false;
-      }
-      console.log(`First play detected: ${patternType}`);
+    if (!currentPattern || (currentPattern && prevPattern && prevPattern.length === 0)) {
       return true;
     }
 
-    if (currentPattern != null && patternType !== currentPattern) {
-      console.log(`Invalid pattern: expected ${currentPattern}, got ${patternType}`);
+    if (currentPattern !== patternType) {
+      console.log(`Invalid pattern: Expected ${currentPattern}, got ${patternType}`);
       return false;
     }
 
-    if (prevPattern != null) {
-      const effectivePrev = prevPattern.map(c => ({
+    if (prevPattern) {
+      const prevEffectiveCards = prevPattern.map(c => ({
         ...c,
         rank: c.isJoker ? c.assignedRank : c.rank,
         suit: c.isJoker ? c.assignedSuit : c.suit,
       }));
-
-      if (effectivePrev.some(c => c.isDetails)) {
-        console.log('Cannot play over Details card');
+      const prevValue = this.getPatternValue(prevEffectiveCards, currentPattern);
+      const currentValue = this.getPatternValue(effectiveCards, currentPattern);
+      if (currentValue <= prevValue) {
+        console.log(`Invalid pattern: Current value (${currentValue}) not greater than previous (${prevValue})`);
         return false;
       }
-
-      if (patternType === 'single' && prevPattern.length === 1) {
-        const isValid = this.getCardValue(effectiveCards[0]) > this.getCardValue(effectivePrev[0]);
-        if (!isValid) {
-          console.log(`Invalid single: ${effectiveCards[0].rank} not higher than ${effectivePrev[0].rank}`);
-        }
-        return isValid;
-      }
-
-      if (patternType === 'pair' && prevPattern.length === 2) {
-        const isValid = this.getCardValue(effectiveCards[0]) > this.getCardValue(effectivePrev[0]);
-        if (!isValid) {
-          console.log(`Invalid pair: ${effectiveCards[0].rank} not higher than ${effectivePrev[0].rank}`);
-        }
-        return isValid;
-      }
-
-      if (patternType.startsWith('group-') && prevPattern.length === effectiveCards.length) {
-        const isValid = this.getCardValue(effectiveCards[0]) > this.getCardValue(effectivePrev[0]);
-        if (!isValid) {
-          console.log(`Invalid group: ${effectiveCards[0].rank} not higher than ${effectivePrev[0].rank}`);
-        }
-        return isValid;
-      }
-
-      if (patternType === 'consecutive' && prevPattern.length === effectiveCards.length) {
-        const sortedCards = [...effectiveCards].sort((a, b) => this.getCardValue(a) - this.getCardValue(b));
-        const sortedPrev = [...effectivePrev].sort((a, b) => this.getCardValue(a) - this.getCardValue(b));
-        const isValid = this.getCardValue(sortedCards[0]) > this.getCardValue(sortedPrev[sortedPrev.length - 1]);
-        if (!isValid) {
-          console.log(`Invalid consecutive: Starts at ${sortedCards[0].rank}, needs to be higher than ${sortedPrev[sortedPrev.length - 1].rank}`);
-        }
-        return isValid;
-      }
-
-      console.log('Pattern validation failed: Mismatched pattern types');
-      return false;
     }
 
     return true;
   }
 
-  getCardValue(card: Card): number {
-    const effectiveRank = card.isJoker ? card.assignedRank : card.rank;
-    if (card.isDetails) return 16;
-    if (card.isJoker && !effectiveRank) return 0;
-    const values: { [key: string]: number } = {
-      '3': 3, '4': 4, '5': 5, '6': 6, '7': 7, '8': 8, '9': 9,
-      '10': 10, 'J': 11, 'Q': 12, 'K': 13, 'A': 14, '2': 15,
-    };
-    return values[effectiveRank!] || 0;
+  private getCardValue(card: Card): number {
+    const ranks = ['3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K', 'A', '2'];
+    const rank = card.isJoker ? card.assignedRank : card.rank;
+    return rank ? ranks.indexOf(rank) + 3 : 0;
+  }
+
+  private getPatternValue(cards: Card[], pattern: string | null): number {
+    if (!pattern || cards.length === 0) return 0;
+    const sortedCards = [...cards].sort((a, b) => this.getCardValue(a) - this.getCardValue(b));
+    if (pattern === 'single' || pattern === 'pair' || pattern.startsWith('group-')) {
+      return this.getCardValue(sortedCards[sortedCards.length - 1]);
+    } else if (pattern === 'consecutive') {
+      return this.getCardValue(sortedCards[0]);
+    }
+    return 0;
+  }
+
+  private cardId(card: Card): string {
+    return `${card.suit ?? 'none'}-${card.rank ?? 'none'}-${card.isJoker}-${card.isDetails}`;
   }
 
   assignTitles(game: Game): void {
@@ -588,9 +577,5 @@ export class GameService {
       });
       console.log(`Game ${game.id} ended. Summary: ${summaryMessage}`);
     }
-  }
-
-  private cardId(card: Card): string {
-    return `${card.suit ?? 'none'}-${card.rank ?? 'none'}-${card.isJoker}-${card.isDetails}`;
   }
 }
