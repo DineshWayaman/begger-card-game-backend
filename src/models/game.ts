@@ -12,4 +12,5 @@ export interface Game {
   passCount: number;
   lastPlayedPlayerId: string | null;
   currentPattern: 'single' | 'pair' | 'consecutive' | `group-${number}` | null;
+  passedPlayerIds: string[];
 }

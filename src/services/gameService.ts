@@ -80,6 +80,7 @@ export class GameService {
       currentPattern: null,
       lastPlayedPlayerId: null,
       isTestMode,
+      passedPlayerIds: [],
     };
     this.games[gameId] = game;
     if (isTestMode) {
@@ -178,6 +179,7 @@ export class GameService {
     game.passCount = 0;
     game.currentPattern = null;
     game.lastPlayedPlayerId = null;
+    game.passedPlayerIds = [];
 
     this.shuffle(game.deck);
     this.deal(game);
@@ -285,6 +287,7 @@ export class GameService {
         player.hand = hand;
         game.pile.push(cards);
         game.passCount = 0;
+        game.passedPlayerIds = [];
         game.lastPlayedPlayerId = playerId;
         this.updatePattern(cards, game);
         console.log(`Test mode play successful, pile: ${game.pile.length}, pattern: ${game.currentPattern}`);
@@ -301,7 +304,7 @@ export class GameService {
     const playedCardIds = cards.map(c => this.cardId(c));
     console.log(`Played card IDs: ${playedCardIds.join(', ')}`);
     if (!playedCardIds.every(id => handCardIds.includes(id))) {
-      console.log(`Invalid play for ${playerId}: Cards not in hand`, { playerId ,cards, handCardIds });
+      console.log(`Invalid play for ${playerId}: Cards not in hand`, { playerId, cards, handCardIds });
       return null;
     }
 
@@ -322,9 +325,10 @@ export class GameService {
       player.hand = hand;
       game.pile.push(cards);
       game.passCount = 0;
+      game.passedPlayerIds = [];
       game.lastPlayedPlayerId = playerId;
       this.updatePattern(cards, game);
-      
+
       if (player.hand.length === 0) {
         this.assignTitles(game);
       }
@@ -369,39 +373,60 @@ export class GameService {
       console.log(`Invalid pass attempt: ${playerId} cannot pass as new round starter with cards`);
       return null;
     }
-    game.passCount++;
-    if (game.passCount >= game.players.filter(p => p.hand.length > 0).length - 1) {
+
+    if (!game.passedPlayerIds.includes(playerId)) {
+      game.passedPlayerIds.push(playerId);
+      game.passCount++;
+    }
+
+    const activePlayers = game.players.filter(p => p.hand.length > 0);
+    const activePlayerCount = activePlayers.length;
+
+    const lastPlayedPlayer = game.lastPlayedPlayerId
+      ? game.players.find(p => p.id === game.lastPlayedPlayerId)
+      : null;
+    const activePlayerIds = activePlayers.map(p => p.id);
+    const remainingActivePlayers = activePlayerIds.filter(
+      id => id !== game.lastPlayedPlayerId && !game.passedPlayerIds.includes(id)
+    );
+
+    if (remainingActivePlayers.length === 0 && activePlayerCount > 1) {
       game.pile = [];
       game.passCount = 0;
+      game.passedPlayerIds = [];
       game.currentPattern = null;
-      const nextPlayerIndex = game.lastPlayedPlayerId
+      let nextPlayerIndex = game.lastPlayedPlayerId
         ? game.players.findIndex(p => p.id === game.lastPlayedPlayerId)
-        : 0;
-      game.currentTurn = this.getNextValidPlayerIndex(game, nextPlayerIndex >= 0 ? nextPlayerIndex : 0);
+        : game.currentTurn;
+      if (nextPlayerIndex < 0 || (lastPlayedPlayer && lastPlayedPlayer.hand.length === 0)) {
+        nextPlayerIndex = (game.currentTurn + 1) % game.players.length;
+      }
+      game.currentTurn = this.getNextValidPlayerIndex(game, nextPlayerIndex);
       console.log(`New round started for game ${gameId}, starting player: ${game.players[game.currentTurn].name}`);
     } else {
       game.currentTurn = this.getNextValidPlayerIndex(game, (game.currentTurn + 1) % game.players.length);
+      console.log(`Player ${playerId} passed, passCount: ${game.passCount}, passedPlayers: ${game.passedPlayerIds}, next turn: ${game.players[game.currentTurn].name}`);
     }
-    console.log(`Player ${playerId} passed, passCount: ${game.passCount}, next turn: ${game.players[game.currentTurn].name}`);
     return game;
   }
 
   private getNextValidPlayerIndex(game: Game, startIndex: number): number {
-    let index = startIndex;
-    const maxAttempts = game.players.length;
+    const numPlayers = game.players.length;
+    let index = startIndex % numPlayers;
     let attempts = 0;
 
-    while (attempts < maxAttempts) {
+    while (attempts < numPlayers) {
       const player = game.players[index];
       if (player.hand.length > 0) {
+        console.log(`Selected next player: ${player.name} at index ${index}`);
         return index;
       }
-      index = (index + 1) % game.players.length;
+      index = (index + 1) % numPlayers;
       attempts++;
     }
 
-    console.log(`No players with cards remaining in game ${game.id}`);
-    return index;
+    console.log(`No players with cards remaining in game ${game.id}, returning startIndex ${startIndex}`);
+    return startIndex;
   }
 
   private updatePattern(cards: Card[], game: Game): void {
@@ -412,10 +437,12 @@ export class GameService {
         const effectiveCards = cards.map(c => ({
           ...c,
           rank: c.isJoker ? c.assignedRank : c.rank,
+          suit: c.isJoker ? c.assignedSuit : c.suit,
         }));
         const sortedCards = [...effectiveCards].sort((a, b) => this.getCardValue(a) - this.getCardValue(b));
         const isConsecutive = sortedCards.every((c, i) => i === 0 || this.getCardValue(c) === this.getCardValue(sortedCards[i - 1]) + 1);
-        if (isConsecutive) {
+        const sameSuit = sortedCards.every((c, i) => i === 0 || c.suit === sortedCards[0].suit);
+        if (isConsecutive && sameSuit) {
           game.currentPattern = 'consecutive';
         } else if (cards.length === 2 && cards.every(c => (c.isJoker ? c.assignedRank : c.rank) === (cards[0].isJoker ? c.assignedRank : c.rank))) {
           game.currentPattern = 'pair';
@@ -439,11 +466,13 @@ export class GameService {
         console.log('Invalid pattern: Details card can only be played alone');
         return false;
       }
-      if (prevPattern && prevPattern.some(c => c.isDetails)) {
-        console.log('Invalid pattern: Cannot play Details card over another Details card');
-        return false;
-      }
-      return true;
+      return true; // Details card is always valid when played alone
+    }
+
+    // Check if previous pattern contains a Details card
+    if (prevPattern && prevPattern.some(c => c.isDetails)) {
+      console.log('Invalid pattern: Cannot play over a Details card');
+      return false;
     }
 
     const effectiveCards = cards.map(c => ({
@@ -469,10 +498,11 @@ export class GameService {
     } else if (effectiveCards.length >= 2 && effectiveCards.length <= 13) {
       const sortedCards = [...effectiveCards].sort((a, b) => this.getCardValue(a) - this.getCardValue(b));
       const isConsecutive = sortedCards.every((c, i) => i === 0 || this.getCardValue(c) === this.getCardValue(sortedCards[i - 1]) + 1);
-      if (isConsecutive) {
+      const sameSuit = sortedCards.every((c, i) => i === 0 || c.suit === sortedCards[0].suit);
+      if (isConsecutive && sameSuit) {
         patternType = 'consecutive';
       } else {
-        console.log('Invalid pattern: Cards do not form a consecutive sequence');
+        console.log('Invalid pattern: Cards do not form a consecutive sequence or are not of the same suit');
         return false;
       }
     } else {
@@ -507,6 +537,9 @@ export class GameService {
   }
 
   private getCardValue(card: Card): number {
+    if (card.isDetails) {
+      return 999; // Assign highest value to Details card
+    }
     const ranks = ['3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K', 'A', '2'];
     const rank = card.isJoker ? card.assignedRank : card.rank;
     return rank ? ranks.indexOf(rank) + 3 : 0;
@@ -515,7 +548,9 @@ export class GameService {
   private getPatternValue(cards: Card[], pattern: string | null): number {
     if (!pattern || cards.length === 0) return 0;
     const sortedCards = [...cards].sort((a, b) => this.getCardValue(a) - this.getCardValue(b));
-    if (pattern === 'single' || pattern === 'pair' || pattern.startsWith('group-')) {
+    if (pattern === 'single') {
+      return this.getCardValue(sortedCards[0]); // Use the card's value directly
+    } else if (pattern === 'pair' || pattern.startsWith('group-')) {
       return this.getCardValue(sortedCards[sortedCards.length - 1]);
     } else if (pattern === 'consecutive') {
       return this.getCardValue(sortedCards[0]);
