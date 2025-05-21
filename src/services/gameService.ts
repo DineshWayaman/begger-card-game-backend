@@ -5,7 +5,7 @@ import { Player } from '../models/player';
 
 export class GameService {
   private games: { [key: string]: Game } = {};
-  private readonly MIN_PLAYERS = 2;
+  private readonly MIN_PLAYERS = 3;
   private readonly MAX_PLAYERS = 6;
   private io: Server;
 
@@ -15,6 +15,11 @@ export class GameService {
       socket.on('leaveGame', (data) => {
         const { gameId, playerId } = data;
         this.leaveGame(gameId, playerId, socket);
+      });
+      // Home leave update: Handle leave from summary screen
+      socket.on('leaveGameFromSummary', (data) => {
+        const { gameId, playerId } = data;
+        this.leaveGameFromSummary(gameId, playerId, socket);
       });
     });
   }
@@ -192,22 +197,78 @@ export class GameService {
     return { game, dismissDialog: true };
   }
 
+  // leaveGame(gameId: string, playerId: string, socket: Socket): Game | null {
+  //   const game = this.getGame(gameId);
+  //   if (!game) {
+  //     console.log(`Cannot leave game ${gameId}: Game not found`);
+  //     return null;
+  //   }
+  //   const player = game.players.find(p => p.id === playerId);
+  //   if (!player) {
+  //     console.log(`Player ${playerId} not found in game ${gameId}`);
+  //     return null;
+  //   }
+  //   game.status = 'finished';
+  //   const message = `Game ended: ${player.name} has left the game.`;
+  //   console.log(`Player ${playerId} left game ${gameId}. Ending game for all players.`);
+  //   this.io.to(gameId).emit('gameEnded', { message });
+  //   delete this.games[gameId];
+  //   return game;
+  // }
   leaveGame(gameId: string, playerId: string, socket: Socket): Game | null {
     const game = this.getGame(gameId);
     if (!game) {
       console.log(`Cannot leave game ${gameId}: Game not found`);
       return null;
     }
-    const player = game.players.find(p => p.id === playerId);
-    if (!player) {
+    const playerIndex = game.players.findIndex(p => p.id === playerId);
+    if (playerIndex === -1) {
       console.log(`Player ${playerId} not found in game ${gameId}`);
       return null;
     }
-    game.status = 'finished';
-    const message = `Game ended: ${player.name} has left the game.`;
-    console.log(`Player ${playerId} left game ${gameId}. Ending game for all players.`);
-    this.io.to(gameId).emit('gameEnded', { message });
-    delete this.games[gameId];
+    const player = game.players[playerIndex];
+    // Only end the game for all players if it's not in 'finished' state
+    if (game.status !== 'finished') {
+      game.status = 'finished';
+      const message = `Game ended: ${player.name} has left the game.`;
+      console.log(`Player ${playerId} left game ${gameId}. Ending game for all players.`);
+      this.io.to(gameId).emit('gameEnded', { message });
+      delete this.games[gameId];
+    } else {
+      // Home leave update: Remove player without ending game if in finished state
+      game.players.splice(playerIndex, 1);
+      console.log(`Player ${playerId} left game ${gameId} (finished state). Remaining players: ${game.players.length}`);
+      socket.leave(gameId);
+      this.io.to(gameId).emit('playerLeft', { playerId, playerName: player.name });
+      if (game.players.length === 0) {
+        console.log(`No players left in game ${gameId}. Deleting game.`);
+        delete this.games[gameId];
+      }
+    }
+    return game;
+  }
+
+  // Home leave update: New method for leaving from summary screen
+  leaveGameFromSummary(gameId: string, playerId: string, socket: Socket): Game | null {
+    const game = this.getGame(gameId);
+    if (!game) {
+      console.log(`Cannot leave game ${gameId} from summary: Game not found`);
+      return null;
+    }
+    const playerIndex = game.players.findIndex(p => p.id === playerId);
+    if (playerIndex === -1) {
+      console.log(`Player ${playerId} not found in game ${gameId}`);
+      return null;
+    }
+    const player = game.players[playerIndex];
+    game.players.splice(playerIndex, 1);
+    console.log(`Player ${playerId} left game ${gameId} from summary. Remaining players: ${game.players.length}`);
+    socket.leave(gameId);
+    this.io.to(gameId).emit('playerLeft', { playerId, playerName: player.name });
+    if (game.players.length === 0) {
+      console.log(`No players left in game ${gameId}. Deleting game.`);
+      delete this.games[gameId];
+    }
     return game;
   }
 
