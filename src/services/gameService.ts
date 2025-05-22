@@ -5,9 +5,11 @@ import { Player } from '../models/player';
 
 export class GameService {
   private games: { [key: string]: Game } = {};
-  private readonly MIN_PLAYERS = 3;
+  private readonly MIN_PLAYERS = 2;
   private readonly MAX_PLAYERS = 6;
+  private readonly TURN_TIMEOUT = 40000; // 30 seconds in milliseconds
   private io: Server;
+  private turnTimers: { [key: string]: NodeJS.Timeout } = {}; // Store timers for each game
 
   constructor(io: Server) {
     this.io = io;
@@ -20,6 +22,15 @@ export class GameService {
       socket.on('leaveGameFromSummary', (data) => {
         const { gameId, playerId } = data;
         this.leaveGameFromSummary(gameId, playerId, socket);
+      });
+      // Pass Timer: Listen for player action to reset timer
+      socket.on('playPattern', (data) => {
+        const { gameId, playerId } = data;
+        this.clearTurnTimer(gameId); // Clear timer on action
+      });
+      socket.on('pass', (data) => {
+        const { gameId, playerId } = data;
+        this.clearTurnTimer(gameId); // Clear timer on action
       });
     });
   }
@@ -138,6 +149,11 @@ export class GameService {
     this.deal(game);
     game.currentTurn = this.getNextValidPlayerIndex(game, 0);
     console.log(`Game ${gameId} started with ${game.players.length} players, starting with player ${game.players[game.currentTurn].name}`);
+    // Pass Timer: Start timer for first player's turn
+    if (!game.isTestMode) {
+      this.startTurnTimer(gameId);
+    }
+    this.io.to(gameId).emit('gameUpdate', game); // Ensure clients are updated
     return game;
   }
 
@@ -355,6 +371,7 @@ export class GameService {
         if (player.hand.length === 0) {
           this.assignTitles(game);
         }
+        this.io.to(gameId).emit('gameUpdate', game);
         return game;
       }
       console.log(`Invalid pattern in test mode for ${playerId}`);
@@ -381,8 +398,7 @@ export class GameService {
       return null;
     }
 
-    const prevPattern = game.pile.length > 0 ? game.pile[game.pile.length - 1] : null;
-    if (this.validatePattern(cards, prevPattern, game.currentPattern)) {
+    if (this.validatePattern(cards, game.pile.length > 0 ? game.pile[game.pile.length - 1] : null, game.currentPattern)) {
       player.hand = hand;
       game.pile.push(cards);
       game.passCount = 0;
@@ -397,8 +413,11 @@ export class GameService {
       if (game.status !== 'finished') {
         game.currentTurn = this.getNextValidPlayerIndex(game, (game.currentTurn + 1) % game.players.length);
         console.log(`Play successful, pile: ${game.pile.length}, pattern: ${game.currentPattern}, next turn: ${game.players[game.currentTurn].name}`);
+        // Pass Timer: Start timer for next player's turn
+        this.startTurnTimer(gameId);
       }
 
+      this.io.to(gameId).emit('gameUpdate', game);
       return game;
     }
 
@@ -468,7 +487,37 @@ export class GameService {
       game.currentTurn = this.getNextValidPlayerIndex(game, (game.currentTurn + 1) % game.players.length);
       console.log(`Player ${playerId} passed, passCount: ${game.passCount}, passedPlayers: ${game.passedPlayerIds}, next turn: ${game.players[game.currentTurn].name}`);
     }
+
+    // Pass Timer: Start timer for next player's turn
+    this.startTurnTimer(gameId);
+    this.io.to(gameId).emit('gameUpdate', game);
     return game;
+  }
+  // Pass Timer: Start a timer for the current player's turn
+  private startTurnTimer(gameId: string): void {
+    this.clearTurnTimer(gameId); // Clear any existing timer
+    const game = this.getGame(gameId);
+    if (!game || game.isTestMode || game.status !== 'playing') {
+      return;
+    }
+    const playerId = game.players[game.currentTurn].id;
+    this.turnTimers[gameId] = setTimeout(() => {
+      console.log(`Turn timeout for player ${playerId} in game ${gameId}`);
+      this.pass(gameId, playerId);
+    }, this.TURN_TIMEOUT);
+    // Emit timer start event to clients
+    this.io.to(gameId).emit('turnTimerStart', {
+      playerId,
+      duration: this.TURN_TIMEOUT / 1000, // Send duration in seconds
+    });
+  }
+
+  // Pass Timer: Clear the timer for a game
+  private clearTurnTimer(gameId: string): void {
+    if (this.turnTimers[gameId]) {
+      clearTimeout(this.turnTimers[gameId]);
+      delete this.turnTimers[gameId];
+    }
   }
 
   private getNextValidPlayerIndex(game: Game, startIndex: number): number {
