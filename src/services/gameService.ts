@@ -5,7 +5,7 @@ import { Player } from '../models/player';
 
 export class GameService {
   private games: { [key: string]: Game } = {};
-  private readonly MIN_PLAYERS = 2;
+  private readonly MIN_PLAYERS = 3;
   private readonly MAX_PLAYERS = 6;
   private readonly TURN_TIMEOUT = 40000; // 30 seconds in milliseconds
   private io: Server;
