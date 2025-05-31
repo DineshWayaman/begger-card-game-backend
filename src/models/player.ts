@@ -5,4 +5,5 @@ export interface Player {
   name: string;
   hand: Card[];
   title: 'King' | 'Wise' | 'Beggar' | 'Civilian' | 'Citizen' | null;
+  isBot?: boolean
 }

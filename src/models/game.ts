@@ -13,4 +13,5 @@ export interface Game {
   lastPlayedPlayerId: string | null;
   currentPattern: 'single' | 'pair' | 'consecutive' | `group-${number}` | null;
   passedPlayerIds: string[];
+  isSinglePlayer?: boolean
 }

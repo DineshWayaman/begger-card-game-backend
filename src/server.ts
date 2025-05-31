@@ -73,7 +73,9 @@ io.on('connection', (socket) => {
   socket.on('restartGame', (data) => {
     const { gameId, playerId } = data;
     console.log(`Restart game request: gameId=${gameId}, playerId=${playerId}`);
-    const { game, dismissDialog } = gameService.restartGame(gameId, playerId);
+    const restartResult = gameService.restartGame(gameId, playerId);
+    const game = restartResult && 'game' in restartResult ? restartResult.game : restartResult;
+    const dismissDialog = restartResult && 'dismissDialog' in restartResult ? restartResult.dismissDialog : undefined;
     if (game) {
       io.to(gameId).emit('gameUpdate', game);
       if (dismissDialog) {
