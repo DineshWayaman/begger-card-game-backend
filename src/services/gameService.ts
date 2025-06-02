@@ -283,6 +283,8 @@ export class GameService {
       assignedSuit: suit,
     });
 
+    console.log(`Generating patterns for hand: ${hand.map(c => c.isJoker ? `Joker` : c.isDetails ? 'Details' : `${c.rank} of ${c.suit}`).join(', ')}`);
+
     if (!currentPattern || currentPattern === 'single') {
       hand.forEach(card => {
         if (card.isJoker) {
@@ -332,28 +334,46 @@ export class GameService {
     }
 
     if (!currentPattern || currentPattern === 'consecutive') {
-      // consecutive length fix: Use previous pattern length for consecutive
       const requiredLength = currentPattern === 'consecutive' && prevPattern ? prevPattern.length : null;
       const minLength = requiredLength || 2;
       const maxLength = requiredLength || hand.length;
+      const prevHighestValue = prevPattern && currentPattern === 'consecutive' 
+        ? this.getCardValue([...prevPattern].sort((a, b) => this.getCardValue(b) - this.getCardValue(a))[0]) 
+        : -1;
+
+      console.log(`Consecutive pattern check: prevHighestValue=${prevHighestValue}, requiredLength=${requiredLength}`);
+
       for (let length = minLength; length <= maxLength; length++) {
         const sequences = this.getConsecutiveSequences(hand, length);
-        sequences.forEach(seq => {
-          if (this.validatePattern(seq, prevPattern, currentPattern)) {
-            patterns.push(seq);
+        console.log(`Generated ${sequences.length} sequences of length ${length}`);
+        sequences.forEach((seq, seqIndex) => {
+          const sortedSeq = [...seq].sort((a, b) => this.getCardValue(a) - this.getCardValue(b));
+          if (currentPattern === 'consecutive' && prevPattern && length !== prevPattern.length) {
+            console.log(`Skipping sequence ${seqIndex}: length ${length} does not match prevPattern length ${prevPattern.length}`);
+            return;
+          }
+          const startValue = this.getCardValue(sortedSeq[0]);
+          if (currentPattern === 'consecutive' && prevHighestValue >= 0 && startValue <= prevHighestValue) {
+            // console.log(`Skipping sequence ${seqIndex} starting with ${sortedSeq[0].rank} (value ${startValue}): must be higher than previous highest ${prevPattern[0].rank} (value ${prevHighestValue})`);
+            return;
+          }
+          if (this.validatePattern(sortedSeq, prevPattern, currentPattern)) {
+            console.log(`Valid sequence ${seqIndex}: ${sortedSeq.map(c => c.isJoker ? `${c.assignedRank} of ${c.assignedSuit}` : `${c.rank} of ${c.suit}`).join(', ')}`);
+            patterns.push(sortedSeq);
+          } else {
+            console.log(`Invalid sequence ${seqIndex}: ${sortedSeq.map(c => c.isJoker ? `${c.assignedRank} of ${c.assignedSuit}` : `${c.rank} of ${c.suit}`).join(', ')}`);
           }
         });
       }
     }
 
-    // Sort patterns to prioritize multi-card patterns over singles, then by value ascending
+    console.log(`Total valid patterns: ${patterns.length}`);
     return patterns.sort((a, b) => {
       const aValue = this.getPatternValue(a, currentPattern || this.getPatternType(a));
       const bValue = this.getPatternValue(b, currentPattern || this.getPatternType(b));
-      const aIsSingle = a.length === 1;
-      const bIsSingle = b.length === 1;
-      if (aIsSingle && !bIsSingle) return 1;
-      if (!aIsSingle && bIsSingle) return -1;
+      const aLength = a.length;
+      const bLength = b.length;
+      if (aLength !== bLength) return bLength - aLength;
       return aValue - bValue;
     });
   }
@@ -430,62 +450,71 @@ export class GameService {
   // smart bot fix: Strategic pattern selection
   // round start fix: Prioritize low-value multi-card patterns at round start
   private chooseSmartPattern(patterns: Card[][], game: Game, bot: Player): Card[] {
-    if (patterns.length === 0) return [];
+    if (patterns.length === 0) {
+      console.log(`Bot ${bot.name} has no valid patterns to play`);
+      return [];
+    }
 
     const prevPattern = game.pile.length > 0 ? game.pile[game.pile.length - 1] : null;
     const prevValue = prevPattern ? this.getPatternValue(prevPattern, game.currentPattern) : 0;
+    const prevStartValue = prevPattern && game.currentPattern === 'consecutive' ? this.getCardValue(prevPattern[0]) : -1;
     const activePlayers = game.players.filter(p => p.hand.length > 0 && p.id !== bot.id).length;
     const handSize = bot.hand.length;
     const isRoundStarter = game.pile.length === 0 && game.passCount === 0;
-    const highCardThreshold = 12; // Value for J, Q, K, A, 2 (11, 12, 13, 14, 15)
+    const highCardThreshold = 12;
 
-    // Strategy weights
-    let playThreshold = prevValue + 1; // Minimum value to beat
-    const aggressiveFactor = handSize <= 3 || activePlayers === 1 ? 1.5 : 1.0; // Play stronger if low hand or few opponents
-    const passChance = !isRoundStarter && Math.random() < 0.2 && prevValue < highCardThreshold && handSize > 5 ? true : false; // 20% chance to pass if pile is weak
+    let playThreshold = prevValue + 1;
+    const aggressiveFactor = handSize <= 3 || activePlayers === 1 ? 1.5 : 1.0;
+    const passChance = !isRoundStarter && Math.random() < 0.2 && prevValue < highCardThreshold && handSize > 5 ? true : false;
 
-    // round start fix: Pass not allowed for round starter
     if (passChance && !isRoundStarter) {
       console.log(`Bot ${bot.name} chooses to pass strategically to conserve high cards`);
       return [];
     }
 
-    // round start fix: Select pattern based on strategy
     let bestPattern: Card[] | null = null;
     let bestScore = Infinity;
 
+    console.log(`Evaluating ${patterns.length} patterns for bot ${bot.name}`);
     for (const pattern of patterns) {
       const patternValue = this.getPatternValue(pattern, game.currentPattern || this.getPatternType(pattern));
-      if (!isRoundStarter && patternValue <= prevValue) continue; // Skip patterns that don't beat previous
+      const patternStartValue = game.currentPattern === 'consecutive' ? this.getCardValue(pattern[0]) : -1;
+      if (!isRoundStarter && patternValue <= prevValue) {
+        console.log(`Skipping pattern with value ${patternValue}: does not beat previous ${prevValue}`);
+        continue;
+      }
+      if (game.currentPattern === 'consecutive' && prevStartValue >= 0 && patternStartValue <= prevStartValue) {
+        console.log(`Skipping pattern starting with ${pattern[0].rank} (value ${patternStartValue}): must be higher than previous ${prevPattern![0].rank} (value ${prevStartValue})`);
+        continue;
+      }
 
-      // Calculate strategic score
-      let score = patternValue * aggressiveFactor; // Base score is pattern value, adjusted by aggression
+      let score = patternValue * aggressiveFactor;
       if (handSize <= 3) {
-        score -= 10; // Prioritize playing when hand is small to win
+        score -= 10;
       }
       if (pattern.length > 2) {
-        score += pattern.length * 2; // Penalize longer patterns to conserve cards
+        score += pattern.length * 2;
       }
 
-      // round start fix: Adjust score for round start
       if (isRoundStarter) {
         if (pattern.length === 1) {
-          score += 50; // Heavily penalize single-card plays
+          score += 50;
           if (patternValue >= highCardThreshold) {
-            score += 20; // Extra penalty for high-value singles (J, Q, K, A, 2)
+            score += 20;
           }
         } else {
-          score -= 10; // Favor multi-card patterns (pairs, consecutive)
+          score -= 10;
           if (patternValue < highCardThreshold) {
-            score -= 5; // Extra bonus for low-value multi-card patterns
+            score -= 5;
           }
         }
       } else {
         if (pattern.length === 1 && patternValue >= highCardThreshold) {
-          score += 10; // Penalize high-value singles in non-round-start
+          score += 10;
         }
       }
 
+      console.log(`Pattern: ${pattern.map(c => c.isJoker ? `${c.assignedRank} of ${c.assignedSuit}` : `${c.rank} of ${c.suit}`).join(', ')}, value: ${patternValue}, score: ${score}`);
       if (score < bestScore) {
         bestScore = score;
         bestPattern = pattern;
@@ -493,7 +522,7 @@ export class GameService {
     }
 
     if (bestPattern) {
-      console.log(`Bot ${bot.name} selects pattern with value ${this.getPatternValue(bestPattern, game.currentPattern || this.getPatternType(bestPattern))} (score: ${bestScore}, roundStarter: ${isRoundStarter})`);
+      console.log(`Bot ${bot.name} selects pattern with value ${this.getPatternValue(bestPattern, game.currentPattern || this.getPatternType(bestPattern))} (score: ${bestScore}, roundStarter: ${isRoundStarter}): ${bestPattern.map(c => c.isJoker ? `${c.assignedRank} of ${c.assignedSuit}` : `${c.rank} of ${c.suit}`).join(', ')}`);
       return bestPattern;
     }
 
@@ -736,7 +765,23 @@ export class GameService {
     }
 
     const player = game.players.find(p => p.id === playerId)!;
-    console.log(`Attempting play by ${playerId}: ${cards.map(c => c.isJoker ? `${c.assignedRank} of ${c.assignedSuit}` : c.isDetails ? 'Details' : `${c.rank} of ${c.suit}`).join(', ')}`);
+    console.log(`Attempting play by ${playerId}: ${cards.map(c => c.isJoker ? `Joker (${c.assignedRank} of ${c.assignedSuit})` : c.isDetails ? 'Details' : `${c.rank} of ${c.suit}`).join(', ')}`);
+
+    // Validate joker assignments for consecutive sequences
+    const effectiveCards = cards.map(card => {
+      if (card.isJoker && (!card.assignedRank || !card.assignedSuit)) {
+        console.log(`Invalid play for ${playerId}: Joker missing assigned rank or suit`, { card });
+        return null;
+      }
+      return {
+        ...card,
+        rank: card.isJoker ? card.assignedRank : card.rank,
+        suit: card.isJoker ? card.assignedSuit : card.suit,
+      };
+    });
+    if (effectiveCards.some(c => c === null)) {
+      return null;
+    }
 
     if (game.isTestMode) {
       if (this.validatePattern(cards, null, null)) {
@@ -772,7 +817,7 @@ export class GameService {
       console.log(`Invalid hand for ${playerId}: Hand mismatch`, {
         submittedHandIds,
         expectedHandIds,
-        difference: submittedHandIds.filter(id => !expectedHandIds.includes(id))
+        difference: submittedHandIds.filter(id => !expectedHandIds.includes(id)),
       });
       return null;
     }
@@ -981,12 +1026,11 @@ export class GameService {
         console.log('Invalid pattern: Details card can only be played alone');
         return false;
       }
-      // details card fix: Details card must be played as single pattern
       if (currentPattern && currentPattern !== 'single') {
         console.log(`Invalid pattern: Details card can only be played as single, current pattern is ${currentPattern}`);
         return false;
       }
-      return true; // Details card is valid as single pattern
+      return true;
     }
 
     if (prevPattern && prevPattern.some(c => c.isDetails)) {
@@ -994,15 +1038,24 @@ export class GameService {
       return false;
     }
 
-    const effectiveCards = cards.map(c => ({
-      ...c,
-      rank: c.isJoker ? c.assignedRank : c.rank,
-      suit: c.isJoker ? c.assignedSuit : c.suit,
-    }));
+    const effectiveCards = cards.map(c => {
+      if (c.isJoker && (!c.assignedRank || !c.assignedSuit)) {
+        console.log(`Invalid pattern: Joker missing assigned rank or suit for card ${this.cardId(c)}`);
+        return null;
+      }
+      return {
+        ...c,
+        rank: c.isJoker ? c.assignedRank : c.rank,
+        suit: c.isJoker ? c.assignedSuit : c.suit,
+      };
+    });
+    if (effectiveCards.some(c => c === null)) {
+      return false;
+    }
 
     for (const card of effectiveCards) {
-      if (card.isJoker && (!card.assignedRank || !card.assignedSuit)) {
-        console.log('Joker missing assigned rank/suit');
+      if (!card!.rank || !card!.suit) {
+        console.log(`Invalid pattern: Card missing rank or suit`, { card });
         return false;
       }
     }
@@ -1011,29 +1064,29 @@ export class GameService {
     if (effectiveCards.length === 1) {
       patternType = 'single';
     } else if (effectiveCards.length === 2) {
-      if (effectiveCards.every(c => c.rank === effectiveCards[0].rank)) {
+      if (effectiveCards.every(c => c!.rank === effectiveCards[0]!.rank)) {
         patternType = 'pair';
       } else {
-        const sortedCards = [...effectiveCards].sort((a, b) => this.getCardValue(a) - this.getCardValue(b));
-        const isConsecutive = this.getCardValue(sortedCards[1]) === this.getCardValue(sortedCards[0]) + 1;
-        const sameSuit = sortedCards[0].suit === sortedCards[1].suit;
+        const sortedCards = [...effectiveCards].sort((a, b) => this.getCardValue(a!) - this.getCardValue(b!));
+        const isConsecutive = this.getCardValue(sortedCards[1]!) === this.getCardValue(sortedCards[0]!) + 1;
+        const sameSuit = sortedCards.every((c, i) => i === 0 || c!.suit === sortedCards[0]!.suit);
         if (isConsecutive && sameSuit) {
           patternType = 'consecutive';
         } else {
-          console.log('Invalid pattern: Two cards must form a pair (same rank) or consecutive sequence (sequential ranks, same suit)');
+          console.log(`Invalid pattern: Two cards must form a pair or consecutive sequence (isConsecutive: ${isConsecutive}, sameSuit: ${sameSuit})`);
           return false;
         }
       }
-    } else if (effectiveCards.length >= 3 && effectiveCards.length <= 4 && effectiveCards.every(c => c.rank === effectiveCards[0].rank)) {
+    } else if (effectiveCards.length >= 3 && effectiveCards.length <= 4 && effectiveCards.every(c => c!.rank === effectiveCards[0]!.rank)) {
       patternType = `group-${effectiveCards.length}`;
     } else if (effectiveCards.length >= 2 && effectiveCards.length <= 13) {
-      const sortedCards = [...effectiveCards].sort((a, b) => this.getCardValue(a) - this.getCardValue(b));
-      const isConsecutive = sortedCards.every((c, i) => i === 0 || this.getCardValue(c) === this.getCardValue(sortedCards[i - 1]) + 1);
-      const sameSuit = sortedCards.every((c, i) => i === 0 || c.suit === sortedCards[0].suit);
+      const sortedCards = [...effectiveCards].sort((a, b) => this.getCardValue(a!) - this.getCardValue(b!));
+      const isConsecutive = sortedCards.every((c, i) => i === 0 || this.getCardValue(c!) === this.getCardValue(sortedCards[i - 1]!) + 1);
+      const sameSuit = sortedCards.every((c, i) => i === 0 || c!.suit === sortedCards[0]!.suit);
       if (isConsecutive && sameSuit) {
         patternType = 'consecutive';
       } else {
-        console.log('Invalid pattern: Cards do not form a consecutive sequence or are not of the same suit');
+        console.log(`Invalid pattern: Cards do not form a consecutive sequence or are not of the same suit (isConsecutive: ${isConsecutive}, sameSuit: ${sameSuit})`);
         return false;
       }
     } else {
@@ -1050,9 +1103,18 @@ export class GameService {
       return false;
     }
 
-    if (currentPattern === 'consecutive' && prevPattern && prevPattern.length !== cards.length) {
-      console.log(`Invalid pattern: Consecutive pattern must have ${prevPattern.length} cards, got ${cards.length}`);
-      return false;
+    if (currentPattern === 'consecutive' && prevPattern) {
+      if (prevPattern.length !== cards.length) {
+        console.log(`Invalid pattern: Consecutive pattern must have ${prevPattern.length} cards, got ${cards.length}`);
+        return false;
+      }
+      const prevSorted = [...prevPattern].sort((a, b) => this.getCardValue(a) - this.getCardValue(b));
+      const prevHighestValue = this.getCardValue(prevSorted[prevSorted.length - 1]);
+      const currentStartValue = this.getCardValue(effectiveCards[0]!);
+      if (currentStartValue <= prevHighestValue) {
+        console.log(`Invalid pattern: Consecutive start card ${effectiveCards[0]!.rank} (value ${currentStartValue}) must be higher than previous highest ${prevSorted[prevSorted.length - 1].rank} (value ${prevHighestValue})`);
+        return false;
+      }
     }
 
     if (prevPattern) {
@@ -1062,7 +1124,7 @@ export class GameService {
         suit: c.isJoker ? c.assignedSuit : c.suit,
       }));
       const prevValue = this.getPatternValue(prevEffectiveCards, currentPattern);
-      const currentValue = this.getPatternValue(effectiveCards, currentPattern);
+      const currentValue = this.getPatternValue(effectiveCards as Card[], currentPattern);
       if (currentValue <= prevValue) {
         console.log(`Invalid pattern: Current value (${currentValue}) not greater than previous (${prevValue})`);
         return false;
