@@ -12,6 +12,8 @@ export class GameService {
   private turnTimers: { [key: string]: NodeJS.Timeout } = {}; // Store timers for each game
   // autoplay mode: Store bot timers
   private botTimers: { [key: string]: NodeJS.Timeout } = {};
+  // Added to track players who disconnected with a 30-second timeout for rejoining
+  private disconnectedPlayers: { [key: string]: NodeJS.Timeout } = {};
 
   constructor(io: Server) {
     this.io = io;
@@ -47,31 +49,87 @@ export class GameService {
         const { gameId, playerId, playerName, botNames } = data;
         this.joinSinglePlayer(gameId, playerId, playerName, botNames, socket);
       });
+     // Bind rejoin event for reconnection
+    socket.on('rejoin', (data) => {
+      const { gameId, playerId } = data;
+      this.handleRejoin(gameId, playerId, socket);
+    });
+    // Bind requestGameState event for state synchronization
+    socket.on('requestGameState', (data) => {
+      const { gameId } = data;
+      console.log(`Game state requested for ${gameId} by socket ${socket.id}`);
+      const game = this.getGame(gameId);
+      if (game) {
+        socket.emit('gameUpdate', game);
+      } else {
+        console.log(`Game state request failed: Game ${gameId} not found`);
+        socket.emit('error', `Game ${gameId} not found. The game may have ended.`);
+        socket.emit('gameEnded', { message: `Game ${gameId} has ended.` });
+      }
+    });
+    
+  
     });
   }
   // autoplay mode: Handle single-player join
   joinSinglePlayer(gameId: string, playerId: string, playerName: string, botNames: string[], socket: Socket): Game | null {
-    if (this.games[gameId]) {
-      console.log(`Game ${gameId} already exists`);
-      return null;
-    }
-    const game = this.createGame(gameId, playerName, false);
-    socket.join(gameId);
-    game.isSinglePlayer = true;
-    botNames.forEach((name, index) => {
-      const botId = `${gameId}-bot${index + 1}`;
-      game.players.push({
-        id: botId,
-        name,
-        hand: [],
-        title: null,
-        isBot: true,
-      });
-    });
-    console.log(`Single-player game ${gameId} created with ${game.players.length} players (${playerName} + ${botNames.length} bots)`);
-    this.io.to(gameId).emit('gameUpdate', game);
-    return game;
+  if (this.games[gameId]) {
+    console.log(`Game ${gameId} already exists`);
+    return null;
   }
+  const game = this.createGame(gameId, playerName, false);
+  socket.join(gameId);
+  game.isSinglePlayer = true;
+  game.players[0].socketId = socket.id; // Store socket ID for human player
+  botNames.forEach((name, index) => {
+    const botId = `${gameId}-bot${index + 1}`;
+    game.players.push({
+      id: botId,
+      name,
+      hand: [],
+      title: null,
+      isBot: true,
+    });
+  });
+  console.log(`Single-player game ${gameId} created with ${game.players.length} players (${playerName} + ${botNames.length} bots)`);
+  this.io.to(gameId).emit('gameUpdate', game);
+  return game;
+}
+
+private handleRejoin(gameId: string, playerId: string, socket: Socket): Game | null {
+  console.log(`Rejoin attempt: gameId=${gameId}, playerId=${playerId}, socket=${socket.id}`);
+  const game = this.getGame(gameId);
+  if (!game) {
+    console.log(`Rejoin failed for ${playerId}: Game ${gameId} not found`);
+    socket.emit('error', `Game ${gameId} not found. The game may have ended.`);
+    socket.emit('gameEnded', { message: `Game ${gameId} has ended.` });
+    return null;
+  }
+  const player = game.players.find(p => p.id === playerId);
+  if (!player) {
+    console.log(`Rejoin failed for ${playerId}: Player not found in game ${gameId}`);
+    socket.emit('error', `Player ${playerId} not found in game ${gameId}.`);
+    socket.emit('gameEnded', { message: `Game ${gameId} has ended.` });
+    return null;
+  }
+  if (this.disconnectedPlayers[playerId]) {
+    console.log(`Cleared disconnection timeout for ${playerId}`);
+    clearTimeout(this.disconnectedPlayers[playerId]);
+    delete this.disconnectedPlayers[playerId];
+  }
+  player.socketId = socket.id;
+  socket.join(gameId);
+  console.log(`Player ${playerId} (${player.name}) rejoined game ${gameId}`);
+  socket.emit('gameUpdate', game);
+  this.io.to(gameId).emit('playerReconnected', {
+    playerId,
+    playerName: player.name,
+  });
+  if (game.status === 'playing' && game.players[game.currentTurn].id === playerId) {
+    this.startTurnTimer(gameId);
+  }
+  return game;
+}
 
   createDeck(): Card[] {
     console.log('Creating deck');
@@ -147,30 +205,94 @@ export class GameService {
     return this.games[gameId] || null;
   }
 
-  joinGame(gameId: string, playerName: string): Game | null {
-    const game = this.getGame(gameId);
-    if (!game || game.status !== 'waiting') {
-      console.log(`Cannot join game ${gameId}: Game not found or not in waiting state`);
-      return null;
-    }
-    if (game.players.length >= this.MAX_PLAYERS) {
-      console.log(`Cannot join game ${gameId}: Maximum players (${this.MAX_PLAYERS}) reached`);
-      return null;
-    }
-    if (game.players.some(p => p.name === playerName)) {
-      console.log(`Player ${playerName} already in game ${gameId}`);
-      return null;
-    }
-    const playerId = `${gameId}-${playerName}`;
-    game.players.push({
-      id: playerId,
-      name: playerName,
-      hand: [],
-      title: null,
-    });
-    console.log(`Player ${playerName} joined game ${gameId}. Players: ${game.players.length}/${this.MAX_PLAYERS}`);
-    return game;
+  joinGame(gameId: string, playerName: string, socket: Socket): Game | null {
+  if (!socket || typeof socket.join !== 'function') {
+    console.error(`Invalid socket for gameId=${gameId}, playerName=${playerName}`);
+    return null;
   }
+  const game = this.getGame(gameId);
+  if (!game || game.status !== 'waiting') {
+    console.log(`Cannot join game ${gameId}: Game not found or not in waiting state`);
+    socket.emit('error', `Game ${gameId} not found or not accepting players`);
+    return null;
+  }
+  if (game.players.length >= this.MAX_PLAYERS) {
+    console.log(`Cannot join game ${gameId}: Maximum players (${this.MAX_PLAYERS}) reached`);
+    socket.emit('error', `Game ${gameId} is full`);
+    return null;
+  }
+  if (game.players.some(p => p.name === playerName)) {
+    console.log(`Player ${playerName} already in game ${gameId}`);
+    socket.emit('error', `Player ${playerName} already in game`);
+    return null;
+  }
+  const playerId = `${gameId}-${playerName}`;
+  game.players.push({
+    id: playerId,
+    name: playerName,
+    hand: [],
+    title: null,
+    socketId: socket.id,
+  });
+  socket.join(gameId);
+  console.log(`Player ${playerName} joined game ${gameId}. Players: ${game.players.length}/${this.MAX_PLAYERS}`);
+  return game;
+}
+
+  handleDisconnect(socket: Socket): void {
+  console.log(`Handling disconnect for socket ${socket.id}`);
+  for (const gameId in this.games) {
+    const game = this.games[gameId];
+    const playerIndex = game.players.findIndex(p => p.socketId === socket.id && !p.isBot);
+    if (playerIndex !== -1) {
+      const player = game.players[playerIndex];
+      console.log(`Player ${player.id} (${player.name}) disconnected from game ${gameId}`);
+      this.io.to(gameId).emit('playerDisconnected', {
+        playerId: player.id,
+        playerName: player.name,
+      });
+      if (game.isSinglePlayer) {
+        console.log(`Ending single-player game ${gameId} due to ${player.name}'s disconnection`);
+        game.status = 'finished';
+        const message = `Game ended: ${player.name} disconnected.`;
+        this.io.to(gameId).emit('gameEnded', { message });
+        this.io.to(player.socketId || '').emit('playerRemoved', {
+          playerId: player.id,
+          message: 'You have been removed from the game due to disconnection.',
+        });
+        this.clearTurnTimer(gameId);
+        this.clearBotTimer(gameId);
+        delete this.games[gameId];
+        if (this.disconnectedPlayers[player.id]) {
+          clearTimeout(this.disconnectedPlayers[player.id]);
+          delete this.disconnectedPlayers[player.id];
+        }
+      } else {
+        console.log(`Starting 45-second rejoin timeout for ${player.id} in game ${gameId}`);
+        this.disconnectedPlayers[player.id] = setTimeout(() => {
+          console.log(`Timeout: Player ${player.id} failed to rejoin game ${gameId}. Ending game.`);
+          if (this.games[gameId]) {
+            game.status = 'finished';
+            const message = `Game ended: ${player.name} disconnected and failed to rejoin within 45 seconds.`;
+            this.io.to(gameId).emit('gameEnded', { message });
+            this.clearTurnTimer(gameId);
+            this.clearBotTimer(gameId);
+            game.players.forEach(p => {
+              this.io.to(p.socketId || '').emit('playerRemoved', {
+                playerId: p.id,
+                message: 'You have been removed from the game due to a player disconnection.',
+              });
+            });
+            delete this.games[gameId];
+            delete this.disconnectedPlayers[player.id];
+            console.log(`Game ${gameId} terminated due to ${player.name}'s disconnection.`);
+          }
+        }, 45000); // Extended to 45 seconds for better tolerance
+      }
+    }
+  }
+}
+
 
   startGame(gameId: string): Game | null {
     const game = this.getGame(gameId);
@@ -638,61 +760,71 @@ export class GameService {
   //   return game;
   // }
   leaveGame(gameId: string, playerId: string, socket: Socket): Game | null {
-    const game = this.getGame(gameId);
-    if (!game) {
-      console.log(`Cannot leave game ${gameId}: Game not found`);
-      return null;
-    }
-    const playerIndex = game.players.findIndex(p => p.id === playerId);
-    if (playerIndex === -1) {
-      console.log(`Player ${playerId} not found in game ${gameId}`);
-      return null;
-    }
-    const player = game.players[playerIndex];
-    // Only end the game for all players if it's not in 'finished' state
-    if (game.status !== 'finished') {
-      game.status = 'finished';
-      const message = `Game ended: ${player.name} has left the game.`;
-      console.log(`Player ${playerId} left game ${gameId}. Ending game for all players.`);
-      this.io.to(gameId).emit('gameEnded', { message });
-      delete this.games[gameId];
-    } else {
-      // Home leave update: Remove player without ending game if in finished state
-      game.players.splice(playerIndex, 1);
-      console.log(`Player ${playerId} left game ${gameId} (finished state). Remaining players: ${game.players.length}`);
-      socket.leave(gameId);
-      this.io.to(gameId).emit('playerLeft', { playerId, playerName: player.name });
-      if (game.players.length === 0) {
-        console.log(`No players left in game ${gameId}. Deleting game.`);
-        delete this.games[gameId];
-      }
-    }
-    return game;
+  const game = this.getGame(gameId);
+  if (!game) {
+    console.log(`Cannot leave game ${gameId}: Game not found`);
+    return null;
   }
+  const playerIndex = game.players.findIndex(p => p.id === playerId);
+  if (playerIndex === -1) {
+    console.log(`Player ${playerId} not found in game ${gameId}`);
+    return null;
+  }
+  const player = game.players[playerIndex];
+  // Clear disconnection timeout
+  if (this.disconnectedPlayers[playerId]) {
+    console.log(`Cleared disconnection timeout for ${playerId}`);
+    clearTimeout(this.disconnectedPlayers[playerId]);
+    delete this.disconnectedPlayers[playerId];
+  }
+  // End game for all players
+  game.status = 'finished';
+  const message = `Game ended: ${player.name} has left the game.`;
+  console.log(`Player ${playerId} left game ${gameId}. Ending game for all players.`);
+  this.io.to(gameId).emit('gameEnded', { message });
+  this.clearTurnTimer(gameId);
+  this.clearBotTimer(gameId);
+  game.players.forEach(p => {
+    this.io.to(p.socketId || '').emit('playerRemoved', {
+      playerId: p.id,
+      message: 'You have been removed from the game due to a player leaving.',
+    });
+  });
+  delete this.games[gameId];
+  return game;
+}
 
   // Home leave update: New method for leaving from summary screen
   leaveGameFromSummary(gameId: string, playerId: string, socket: Socket): Game | null {
-    const game = this.getGame(gameId);
-    if (!game) {
-      console.log(`Cannot leave game ${gameId} from summary: Game not found`);
-      return null;
-    }
-    const playerIndex = game.players.findIndex(p => p.id === playerId);
-    if (playerIndex === -1) {
-      console.log(`Player ${playerId} not found in game ${gameId}`);
-      return null;
-    }
-    const player = game.players[playerIndex];
-    game.players.splice(playerIndex, 1);
-    console.log(`Player ${playerId} left game ${gameId} from summary. Remaining players: ${game.players.length}`);
-    socket.leave(gameId);
-    this.io.to(gameId).emit('playerLeft', { playerId, playerName: player.name });
-    if (game.players.length === 0) {
-      console.log(`No players left in game ${gameId}. Deleting game.`);
-      delete this.games[gameId];
-    }
-    return game;
+  const game = this.getGame(gameId);
+  if (!game) {
+    console.log(`Cannot leave game ${gameId} from summary: Game not found`);
+    return null;
   }
+  const playerIndex = game.players.findIndex(p => p.id === playerId);
+  if (playerIndex === -1) {
+    console.log(`Player ${playerId} not found in game ${gameId}`);
+    return null;
+  }
+  const player = game.players[playerIndex];
+  // Clear disconnection timeout if it exists
+  if (this.disconnectedPlayers[playerId]) {
+    console.log(`Cleared disconnection timeout for ${playerId}`);
+    clearTimeout(this.disconnectedPlayers[playerId]);
+    delete this.disconnectedPlayers[playerId];
+  }
+  // Remove player without ending game
+  game.players.splice(playerIndex, 1);
+  socket.leave(gameId);
+  console.log(`Player ${playerId} left game ${gameId} from summary. Remaining players: ${game.players.length}`);
+  this.io.to(gameId).emit('playerLeft', { playerId, playerName: player.name });
+  // Delete game if no players remain
+  if (game.players.length === 0) {
+    console.log(`No players left in game ${gameId}. Deleting game.`);
+    delete this.games[gameId];
+  }
+  return game;
+}
 
   shuffle(deck: Card[]): void {
     for (let i = deck.length - 1; i > 0; i--) {

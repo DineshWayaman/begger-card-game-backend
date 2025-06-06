@@ -5,5 +5,6 @@ export interface Player {
   name: string;
   hand: Card[];
   title: 'King' | 'Wise' | 'Beggar' | 'Civilian' | 'Citizen' | null;
-  isBot?: boolean
+  isBot?: boolean;
+  socketId?: string; // Added to store the socket ID for disconnection handling
 }

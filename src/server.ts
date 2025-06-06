@@ -26,17 +26,26 @@ io.on('connection', (socket) => {
   // Handle voice signaling
   voiceSignalingService.handleVoiceSignaling(socket);
 
+  // Updated join event handler to fix TypeError
   socket.on('join', (data) => {
     const { gameId, playerId, playerName, isTestMode } = data;
     console.log(`Join request: gameId=${gameId}, playerId=${playerId}, playerName=${playerName}, isTestMode=${isTestMode}`);
+    // Validate input data
+    if (!gameId || !playerName) {
+      socket.emit('error', 'Missing gameId or playerName');
+      console.log(`Join failed: Missing gameId or playerName`);
+      return;
+    }
     let game = gameService.getGame(gameId);
     if (!game) {
+      // Create new game if it doesn't exist
       game = gameService.createGame(gameId, playerName, isTestMode);
     } else {
-      game = gameService.joinGame(gameId, playerName);
+      // Join existing game, passing socket
+      game = gameService.joinGame(gameId, playerName, socket);
     }
     if (game) {
-      socket.join(gameId);
+      // Emit game update to the player and room
       socket.emit('gameUpdate', game);
       io.to(gameId).emit('gameUpdate', game);
       console.log(`Player ${playerName} joined game ${gameId}. Players: ${game.players.length}`);
@@ -127,8 +136,11 @@ io.on('connection', (socket) => {
     }
   });
 
+  // Updated disconnect handler to integrate with GameService
   socket.on('disconnect', () => {
     console.log(`Client disconnected: ${socket.id}`);
+    // Notify GameService to handle disconnection with 30-second timeout
+    gameService.handleDisconnect(socket);
   });
 });
 
